@@ -3,41 +3,38 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Sleeper League HQ</title>
+  <title>Dynasty of Legends</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <div class="app-shell">
     <aside class="sidebar">
       <div class="brand">
-        <div class="brand-mark">HQ</div>
-        <div><strong>Sleeper League HQ</strong><span>Dynasty + redraft analytics</span></div>
+        <div class="crest-wrap"><img src="dynasty-crest.png" alt="Dynasty of Legends crowned king crest" /></div>
+        <div class="brand-copy"><strong>Dynasty of Legends</strong><span>Sleeper League HQ</span></div>
       </div>
       <nav id="nav">
-        <button class="nav-item active" data-view="overview">Overview</button>
-        <button class="nav-item" data-view="standings">Standings</button>
-        <button class="nav-item" data-view="history">League History</button>
+        <button class="nav-item active" data-view="overview"><span>⌂</span>Overview</button>
+        <button class="nav-item" data-view="history"><span>♛</span>League History</button>
+        <button class="nav-item" data-view="standings"><span>▥</span>Standings</button>
+        <button class="nav-item" data-view="headtohead"><span>⚔</span>Head to Head</button>
+        <button class="nav-item" data-view="records"><span>★</span>Records</button>
       </nav>
-      <div class="sidebar-footer">
-        <span class="status-dot"></span>
-        <span id="api-status">Connecting to Sleeper</span>
-      </div>
+      <div class="motto"><span>♛</span><strong>DYNASTY BUILT.</strong><strong>LEGENDS ETERNAL.</strong></div>
+      <div class="sidebar-footer"><span class="status-dot"></span><span id="api-status">Connecting to Sleeper</span></div>
     </aside>
 
     <main class="content">
-      <header class="topbar">
-        <div>
-          <p class="eyebrow">LEAGUE COMMAND CENTER</p>
-          <h1 id="league-name">Loading league…</h1>
-          <p id="league-meta" class="muted">Sleeper league 1326583431680761856</p>
+      <header class="hero">
+        <div class="hero-title">
+          <p class="eyebrow gold">THE OFFICIAL ARCHIVE</p>
+          <h1>Dynasty <span>of Legends</span></h1>
+          <p id="league-meta" class="hero-subtitle">Loading Sleeper league…</p>
         </div>
-        <div class="topbar-actions">
-          <select id="season-select" aria-label="Season"></select>
-          <button id="refresh-btn">Refresh</button>
-        </div>
+        <div class="live-card"><div><span class="status-dot"></span><strong>LIVE</strong></div><small>League data via Sleeper API</small><button id="refresh-btn">↻ Refresh</button></div>
       </header>
 
       <section id="error-banner" class="error-banner hidden"></section>
@@ -49,15 +46,14 @@
           <article class="stat-card"><span>League Leader</span><strong id="stat-leader">—</strong><small id="stat-leader-detail">—</small></article>
           <article class="stat-card"><span>Points Leader</span><strong id="stat-pf-leader">—</strong><small id="stat-pf-detail">—</small></article>
         </div>
-
-        <div class="two-col">
+        <div class="two-col overview-columns">
           <article class="panel">
-            <div class="panel-head"><div><p class="eyebrow">CURRENT TABLE</p><h2>Standings</h2></div><span class="pill">Live from Sleeper</span></div>
+            <div class="panel-head"><div><p class="eyebrow">CURRENT TABLE</p><h2>Standings</h2></div><span class="pill">Live</span></div>
             <div class="table-wrap"><table><thead><tr><th>#</th><th>Team</th><th>W-L-T</th><th>PF</th><th>PA</th></tr></thead><tbody id="overview-standings"></tbody></table></div>
           </article>
-
-          <article class="panel">
-            <div class="panel-head"><div><p class="eyebrow">DYNASTY ARCHIVE</p><h2>History Snapshot</h2></div></div>
+          <article class="panel dynasty-snapshot">
+            <div class="panel-head"><div><p class="eyebrow">THE CHAMPIONS</p><h2>Dynasty History</h2></div><span class="crown">♛</span></div>
+            <div class="history-header"><span>Year</span><span>Champion</span><span>Record</span><span></span></div>
             <div id="history-summary" class="history-summary"><div class="skeleton tall"></div></div>
           </article>
         </div>
@@ -65,21 +61,64 @@
 
       <section id="standings-view" class="view">
         <article class="panel">
-          <div class="panel-head"><div><p class="eyebrow">FULL LEAGUE</p><h2>Standings</h2></div></div>
+          <div class="panel-head"><div><p class="eyebrow">FULL LEAGUE</p><h2 id="standings-title">Standings</h2></div><select id="season-select" aria-label="Standings season"></select></div>
           <div class="table-wrap"><table><thead><tr><th>#</th><th>Team</th><th>Manager</th><th>Record</th><th>PF</th><th>PA</th><th>Moves</th></tr></thead><tbody id="full-standings"></tbody></table></div>
         </article>
       </section>
 
       <section id="history-view" class="view">
-        <div class="history-hero">
-          <div><p class="eyebrow">FRANCHISE ARCHIVE</p><h2>League History</h2><p class="muted">Sleeper links dynasty seasons with <code>previous_league_id</code>. This page walks that chain automatically.</p></div>
+        <div class="history-hero panel">
+          <div><p class="eyebrow">FRANCHISE ARCHIVE</p><h2>League History</h2><p class="muted">Every linked Sleeper season, its true playoff champion, and the champion's regular-season record.</p></div>
           <div class="history-count"><strong id="history-count">—</strong><span>seasons found</span></div>
         </div>
-        <div id="history-cards" class="history-cards"></div>
+        <div class="history-layout">
+          <article class="panel">
+            <div class="panel-head"><div><p class="eyebrow">YEAR BY YEAR</p><h2>Championship Ledger</h2></div></div>
+            <div class="history-header large"><span>Year</span><span>Champion</span><span>Record</span><span>Trophy</span></div>
+            <div id="history-ledger" class="history-summary"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-head"><div><p class="eyebrow">ALL TIME</p><h2>Championship Leaders</h2></div></div>
+            <div id="championship-leaders" class="leader-stack"></div>
+          </article>
+        </div>
       </section>
+
+      <section id="headtohead-view" class="view">
+        <div class="two-col h2h-layout">
+          <article class="panel">
+            <div class="panel-head"><div><p class="eyebrow">ALL-SEASON RIVALRY</p><h2>Head to Head</h2></div><span class="crossed">⚔</span></div>
+            <div class="matchup-selectors">
+              <label>Manager<select id="h2h-a"></select></label>
+              <div class="versus">VS</div>
+              <label>Opponent<select id="h2h-b"></select></label>
+            </div>
+            <div class="h2h-scoreboard">
+              <div><strong id="h2h-a-wins">—</strong><span id="h2h-a-label">Wins</span></div>
+              <div><strong id="h2h-ties">—</strong><span>Ties</span></div>
+              <div><strong id="h2h-b-wins">—</strong><span id="h2h-b-label">Wins</span></div>
+              <div><strong id="h2h-games">—</strong><span>Matchups</span></div>
+            </div>
+            <div class="table-wrap"><table><thead><tr><th>Season</th><th>Week</th><th>Winner</th><th>Score</th></tr></thead><tbody id="h2h-results"></tbody></table></div>
+          </article>
+          <article class="panel">
+            <div class="panel-head"><div><p class="eyebrow">RIVALRY NOTES</p><h2>By the Numbers</h2></div></div>
+            <div id="h2h-notes" class="record-grid"></div>
+          </article>
+        </div>
+      </section>
+
+      <section id="records-view" class="view">
+        <div class="records-head panel"><div><p class="eyebrow">LEGENDARY PERFORMANCES</p><h2>Highest Scoring Players</h2><p class="muted">Top individual player performances found in your league's Sleeper matchup history.</p></div><span id="records-status" class="pill">Loading history</span></div>
+        <article class="panel">
+          <div class="record-tabs"><button class="record-tab active" data-limit="10">Top 10</button><button class="record-tab" data-limit="25">Top 25</button><span id="player-db-note" class="muted"></span></div>
+          <div class="table-wrap"><table><thead><tr><th>#</th><th>Player</th><th>Score</th><th>Season</th><th>Week</th><th>Manager</th></tr></thead><tbody id="player-records"></tbody></table></div>
+        </article>
+      </section>
+
+      <footer><span>DYNASTY OF LEGENDS</span><i>•</i><span>SLEEPER LEAGUE HQ</span></footer>
     </main>
   </div>
-
   <script src="app.js"></script>
 </body>
 </html>

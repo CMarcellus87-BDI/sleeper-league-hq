@@ -1,45 +1,23 @@
-# Sleeper League HQ
+# Dynasty of Legends — Sleeper League HQ
 
-A lightweight fantasy-football command center powered by Sleeper's public read-only API.
+A no-backend GitHub Pages dashboard for Sleeper league `1326583431680761856`.
 
-## Current prototype
+## v2 features
 
-- Live league metadata
-- Live standings from rosters/users
-- League leaders and points leaders
-- Dynasty history traversal through `previous_league_id`
-- Season selector
-- GitHub Pages-friendly: no backend and no build step
+- Live current-season standings
+- True historical champions from Sleeper's winners bracket
+- Cleaner championship ledger: year / champion / record / trophy
+- All-time championship leaders
+- Cross-season manager head-to-head records and matchup history
+- Highest individual player game scores across linked seasons
+- Dynasty of Legends custom visual identity
 
-The prototype is currently configured for league ID `1326583431680761856`.
+## Deploy
 
-## Run locally
+This repo is designed for GitHub Pages. Serve the root of the `main` branch.
 
-Do not double-click `index.html`; serve the directory over HTTP so browser API requests behave consistently.
+## Data source
 
-```bash
-python -m http.server 8080
-```
+The browser reads the public Sleeper API directly. `previous_league_id` is followed backward to build league history. Historical matchup pages are loaded for linked seasons; the Sleeper NFL player directory is loaded to convert player IDs into names.
 
-Then open `http://localhost:8080`.
-
-## Deploy with GitHub Pages
-
-1. Create a repository and add these files at the repository root.
-2. In GitHub: Settings → Pages.
-3. Choose **Deploy from a branch**, `main`, `/ (root)`.
-
-## Next phase: BDI Fantasy HQ
-
-Add a second league ID to configuration and merge both datasets into:
-
-- Conference A / Conference B standings
-- Combined 20-team power rankings
-- Weekly awards
-- Points-for playoff cut line (top 3 per conference)
-- Weeks 15–17 custom 6 → 4 → 2 championship series
-- All-time league records and head-to-head history
-
-## Sleeper API
-
-This app uses `https://api.sleeper.app/v1`. Sleeper's public API is read-only and does not require an API token.
+No API key or backend is required.
