@@ -7,7 +7,8 @@ const CONFIG = {
 
 const state = {
   league: null, users: [], rosters: [], history: [],
-  matchupsLoaded: false, playerMap: {}, playerRecordsLimit: 10
+  matchupsLoaded: false, analyticsLoading: false, analyticsPromise: null,
+  playersLoaded: false, playerMap: {}, playerRecordsLimit: 10
 };
 const $ = id => document.getElementById(id);
 
@@ -88,7 +89,8 @@ async function loadHistory(startLeague) {
   state.history=history;
   renderHistory();
   populateSeasonSelect();
-  await loadAllMatchups();
+  $('records-status').textContent='Ready to load archive';
+  $('player-db-note').textContent='Open Records to load historical player performances';
 }
 
 function renderHistory() {
@@ -114,28 +116,54 @@ function regularSeasonWeeks(item){
 }
 
 async function loadAllMatchups(){
+  if(state.matchupsLoaded) return;
+  if(state.analyticsPromise) return state.analyticsPromise;
+  state.analyticsLoading=true;
   $('records-status').textContent='Loading matchup archive';
-  const jobs=[];
-  for(const item of state.history){
-    const weeks=regularSeasonWeeks(item);
-    jobs.push((async()=>{
-      const results=[];
-      for(let week=1;week<=weeks;week++){
-        const data=await api(`/league/${item.league.league_id}/matchups/${week}`).catch(()=>[]);
-        if(!data?.length && week>14) break;
-        results.push({week,data:data||[]});
+  state.analyticsPromise=(async()=>{
+    const tasks=[];
+    for(const item of state.history){
+      const weeks=regularSeasonWeeks(item);
+      item.matchups=[];
+      for(let week=1;week<=weeks;week++) tasks.push({item,week});
+    }
+    let cursor=0;
+    const workers=Array.from({length:4}, async()=>{
+      while(cursor<tasks.length){
+        const task=tasks[cursor++];
+        const data=await api(`/league/${task.item.league.league_id}/matchups/${task.week}`).catch(()=>[]);
+        if(data?.length) task.item.matchups.push({week:task.week,data});
       }
-      item.matchups=results;
-    })());
+    });
+    await Promise.all(workers);
+    state.history.forEach(item=>item.matchups.sort((a,b)=>a.week-b.week));
+    state.matchupsLoaded=true;
+    state.analyticsLoading=false;
+    renderH2HSelectors();
+    renderH2H();
+    $('records-status').textContent='Matchup archive loaded';
+  })().catch(err=>{
+    state.analyticsLoading=false;
+    state.analyticsPromise=null;
+    $('records-status').textContent='Archive load failed';
+    throw err;
+  });
+  return state.analyticsPromise;
+}
+
+async function ensureH2HLoaded(){
+  if(!state.matchupsLoaded){
+    $('h2h-results').innerHTML='<tr><td colspan="4" class="muted">Loading historical matchups…</td></tr>';
+    await loadAllMatchups();
   }
-  await Promise.all(jobs);
-  state.matchupsLoaded=true;
-  renderH2HSelectors(); renderH2H();
-  $('records-status').textContent='Matchup archive loaded';
+  renderH2H();
+}
+
+async function ensureRecordsLoaded(){
+  await loadAllMatchups();
   await loadPlayerDirectory();
   renderPlayerRecords();
 }
-
 function managerDirectory(){
   const map=new Map();
   state.history.forEach(item=>item.users.forEach(u=>{if(u?.user_id&&!map.has(u.user_id)) map.set(u.user_id,{id:u.user_id,name:managerName(u)})}));
@@ -184,8 +212,9 @@ function renderH2H(){
 }
 
 async function loadPlayerDirectory(){
+  if(state.playersLoaded) return;
   $('player-db-note').textContent='Loading Sleeper player names…';
-  try{ state.playerMap=await api('/players/nfl'); $('player-db-note').textContent='Sleeper player directory loaded'; }
+  try{ state.playerMap=await api('/players/nfl'); state.playersLoaded=true; $('player-db-note').textContent='Sleeper player directory loaded'; }
   catch{ state.playerMap={}; $('player-db-note').textContent='Player names unavailable; showing Sleeper player IDs'; }
 }
 function collectPlayerPerformances(){
@@ -225,9 +254,13 @@ async function load(){
   }catch(err){setError(err)}
 }
 
-document.querySelectorAll('.nav-item').forEach(btn=>btn.addEventListener('click',()=>{
+document.querySelectorAll('.nav-item').forEach(btn=>btn.addEventListener('click',async()=>{
   document.querySelectorAll('.nav-item').forEach(b=>b.classList.remove('active'));btn.classList.add('active');
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active-view'));$(`${btn.dataset.view}-view`).classList.add('active-view');
+  try{
+    if(btn.dataset.view==='headtohead') await ensureH2HLoaded();
+    if(btn.dataset.view==='records') await ensureRecordsLoaded();
+  }catch(err){ setError(err); }
 }));
 $('refresh-btn').addEventListener('click',load);
 $('season-select').addEventListener('change',e=>{const item=state.history[Number(e.target.value)];if(item)renderStandings(item)});
