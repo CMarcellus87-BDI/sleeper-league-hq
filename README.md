@@ -1,23 +1,33 @@
-# Dynasty of Legends — Sleeper League HQ
+# Dynasty of Legends — Sleeper League HQ v4
 
-A GitHub Pages-friendly dashboard for Sleeper league `1326583431680761856`.
+A static, GitHub Pages-friendly fantasy football archive powered by Sleeper's public read-only API.
 
-## V3
+## League
 
-- Live current-season standings
-- Dynasty history by following Sleeper's `previous_league_id` chain
-- Champions resolved from each season's winners bracket
-- Cleaner history snapshot: Year → Champion → Record → Trophy
-- All-time championship leaders
-- Head-to-head rivalry archive across linked seasons, including playoffs
-- Highest individual player scoring performances from historical matchup data
-- Progressive loading: historical matchups and the Sleeper NFL player directory load only when needed
-- Custom Dynasty of Legends SVG crest
+Primary Sleeper league ID: `1326583431680761856`
 
-## Hosting
+## v4 features
 
-This project is intentionally static: `index.html`, `styles.css`, `app.js`, and `dynasty-crest.svg`. It can run directly on GitHub Pages without a backend.
+- Current-season League HQ with standings and matchup board
+- Trophy Room with true playoff-bracket champions and runners-up
+- Historical standings for every linked Sleeper season
+- Franchise Hall with all-time titles, finals, playoff appearances, W-L-T, PF, GOAT Index, Pain Index, and Rivalry Index
+- Full cross-season head-to-head matchup archive
+- Record Book for team-week, matchup, season, and individual-player records
+- Season Explorer with champion, standings, weekly highs, and playoff summary
+- Progressive historical loading so the live homepage renders before expensive archive analytics
 
-## Notes
+## Deployment
 
-Sleeper's player directory is a large endpoint, so the Records page loads it only on demand. If Sleeper rate-limits or temporarily fails, the current-season UI should still remain usable and error messages are shown inline.
+Upload these files to the root of a GitHub repository and enable GitHub Pages from the `main` branch / root folder:
+
+- `index.html`
+- `styles.css`
+- `app.js`
+- `dynasty-crest.svg`
+
+No backend, build process, or API token is required.
+
+## Custom indexes
+
+The DOL GOAT, Pain, and Rivalry indexes are custom league analytics calculated from Sleeper data. Their formulas are shown in the UI and are intended for entertainment, trash talk, and historical comparison.
