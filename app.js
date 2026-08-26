@@ -88,12 +88,7 @@ function renderCurrentLeague() {
 }
 
 async function renderCurrentWeek() {
-  const rawWeek = Number(state.nflState?.week || 0);
-  // Sleeper's NFL state can reflect preseason/current calendar state before the fantasy regular season starts.
-  // Until Week 1 has actually started, the league HQ should preview Week 1 rather than a preseason week number.
-  const seasonStarted = state.nflState?.season_type === 'regular' && rawWeek >= 1;
-  const week = seasonStarted ? rawWeek : 1;
-  $('stat-week').textContent=`Week ${week}`; $('matchup-week-title').textContent=`Week ${week} Matchups`;
+  const week = Number(state.nflState?.week || 1); $('stat-week').textContent=`Week ${week}`; $('matchup-week-title').textContent=`Week ${week} Matchups`;
   const rows=await api(`/league/${CONFIG.primaryLeagueId}/matchups/${week}`).catch(()=>[]); const users=Object.fromEntries(state.users.map(u=>[u.user_id,u])); const rosters=Object.fromEntries(state.rosters.map(r=>[Number(r.roster_id),r]));
   const groups={}; rows.forEach(m=>{ if(m.matchup_id!=null)(groups[m.matchup_id]||=[]).push(m); });
   const games=Object.values(groups).filter(g=>g.length===2).map(pair=>pair.map(m=>{const r=rosters[Number(m.roster_id)],u=r?users[r.owner_id]:null;return {name:franchiseName(u,r),score:Number(m.points||0)};}));
@@ -137,32 +132,14 @@ async function loadAllMatchups() {
   })();return state.matchupsPromise;
 }
 
-function isCompletedArchiveWeek(item, week){
-  const season = Number(item?.league?.season || 0);
-  const currentSeason = Number(state.nflState?.season || 0);
-  const currentWeek = Number(state.nflState?.week || 0);
-  const seasonType = state.nflState?.season_type || '';
-  if(!currentSeason) return true;
-  if(season < currentSeason) return true;
-  if(season > currentSeason) return false;
-  // Never archive preseason/future schedule rows. During the regular/postseason,
-  // only weeks strictly before the NFL's current week are completed history.
-  if(seasonType !== 'regular' && seasonType !== 'post') return false;
-  return week < currentWeek;
-}
-
 function buildArchive(){
   const names=ownerNameMap(); const teamGames=[]; const pairedGames=[]; const playerGames=[]; const franchise=new Map();
   state.history.forEach(item=>{
     const users=Object.fromEntries(item.users.map(u=>[u.user_id,u])); const ownerByRoster=Object.fromEntries(item.rosters.map(r=>[Number(r.roster_id),r.owner_id])); const table=rosterTable(item); const playoffIds=playoffRosterIds(item); const champ=champion(item); const runner=runnerUp(item);
     table.forEach(r=>{if(!r.ownerId)return; if(!franchise.has(r.ownerId))franchise.set(r.ownerId,{ownerId:r.ownerId,name:r.manager,seasons:0,titles:0,finals:0,playoffs:0,wins:0,losses:0,ties:0,pf:0,pa:0,bestSeason:null});const f=franchise.get(r.ownerId);f.name=r.manager||f.name;f.seasons++;f.wins+=r.wins;f.losses+=r.losses;f.ties+=r.ties;f.pf+=r.pf;f.pa+=r.pa;if(playoffIds.has(r.rosterId))f.playoffs++;if(champ.ownerId===r.ownerId)f.titles++;if(runner.ownerId===r.ownerId)f.finals++;const candidate={season:item.league.season,wins:r.wins,losses:r.losses,pf:r.pf};if(!f.bestSeason||candidate.wins>f.bestSeason.wins||(candidate.wins===f.bestSeason.wins&&candidate.pf>f.bestSeason.pf))f.bestSeason=candidate;});
     item.matchups.forEach(({week,data})=>{
-      if(!isCompletedArchiveWeek(item, week)) return;
       data.forEach(m=>{const ownerId=ownerByRoster[Number(m.roster_id)]; if(!ownerId)return; const user=users[ownerId];teamGames.push({ownerId,manager:managerName(user),season:item.league.season,week,points:Number(m.points||0),type:week>regularSeasonEnd(item)?'Playoffs':'Regular'});Object.entries(m.players_points||{}).forEach(([playerId,pts])=>{const points=Number(pts);if(Number.isFinite(points))playerGames.push({playerId,points,ownerId,manager:managerName(user),season:item.league.season,week});});});
-      const groups={};data.forEach(m=>{if(m.matchup_id!=null)(groups[m.matchup_id]||=[]).push(m);});Object.values(groups).filter(p=>p.length===2).forEach(pair=>{const a=pair[0],b=pair[1],oa=ownerByRoster[Number(a.roster_id)],ob=ownerByRoster[Number(b.roster_id)];if(!oa||!ob)return;const sa=Number(a.points||0),sb=Number(b.points||0);
-      // Current-season future/in-progress weeks were filtered above. For older seasons,
-      // retain legitimate completed ties, including the rare 0-0 case if Sleeper recorded one.
-      pairedGames.push({season:item.league.season,week,type:week>regularSeasonEnd(item)?'Playoffs':'Regular',a:oa,b:ob,aName:names[oa]||oa,bName:names[ob]||ob,aScore:sa,bScore:sb,winner:sa===sb?null:(sa>sb?oa:ob),loser:sa===sb?null:(sa>sb?ob:oa),margin:Math.abs(sa-sb),total:sa+sb});});
+      const groups={};data.forEach(m=>{if(m.matchup_id!=null)(groups[m.matchup_id]||=[]).push(m);});Object.values(groups).filter(p=>p.length===2).forEach(pair=>{const a=pair[0],b=pair[1],oa=ownerByRoster[Number(a.roster_id)],ob=ownerByRoster[Number(b.roster_id)];if(!oa||!ob)return;const sa=Number(a.points||0),sb=Number(b.points||0);pairedGames.push({season:item.league.season,week,type:week>regularSeasonEnd(item)?'Playoffs':'Regular',a:oa,b:ob,aName:names[oa]||oa,bName:names[ob]||ob,aScore:sa,bScore:sb,winner:sa===sb?null:(sa>sb?oa:ob),loser:sa===sb?null:(sa>sb?ob:oa),margin:Math.abs(sa-sb),total:sa+sb});});
     });
   });
   const franchises=[...franchise.values()].map(f=>{const gp=f.wins+f.losses+f.ties;f.winPct=gp?(f.wins+0.5*f.ties)/gp:0;f.goat=f.titles*100+f.finals*45+f.playoffs*15+f.wins*2+f.pf/100;return f;}).sort((a,b)=>b.goat-a.goat);

@@ -1,39 +1,45 @@
-# Dynasty of Legends — Sleeper League HQ v4
+# Sleeper League HQ
 
-A static, GitHub Pages-friendly fantasy football archive powered by Sleeper's public read-only API.
+A lightweight fantasy-football command center powered by Sleeper's public read-only API.
 
-## League
+## Current prototype
 
-Primary Sleeper league ID: `1326583431680761856`
+- Live league metadata
+- Live standings from rosters/users
+- League leaders and points leaders
+- Dynasty history traversal through `previous_league_id`
+- Season selector
+- GitHub Pages-friendly: no backend and no build step
 
-## v4 features
+The prototype is currently configured for league ID `1326583431680761856`.
 
-- Current-season League HQ with standings and matchup board
-- Trophy Room with true playoff-bracket champions and runners-up
-- Historical standings for every linked Sleeper season
-- Franchise Hall with all-time titles, finals, playoff appearances, W-L-T, PF, GOAT Index, Pain Index, and Rivalry Index
-- Full cross-season head-to-head matchup archive
-- Record Book for team-week, matchup, season, and individual-player records
-- Season Explorer with champion, standings, weekly highs, and playoff summary
-- Progressive historical loading so the live homepage renders before expensive archive analytics
+## Run locally
 
-## Deployment
+Do not double-click `index.html`; serve the directory over HTTP so browser API requests behave consistently.
 
-Upload these files to the root of a GitHub repository and enable GitHub Pages from the `main` branch / root folder:
+```bash
+python -m http.server 8080
+```
 
-- `index.html`
-- `styles.css`
-- `app.js`
-- `dynasty-crest.svg`
+Then open `http://localhost:8080`.
 
-No backend, build process, or API token is required.
+## Deploy with GitHub Pages
 
-## Custom indexes
+1. Create a repository and add these files at the repository root.
+2. In GitHub: Settings → Pages.
+3. Choose **Deploy from a branch**, `main`, `/ (root)`.
 
-The DOL GOAT, Pain, and Rivalry indexes are custom league analytics calculated from Sleeper data. Their formulas are shown in the UI and are intended for entertainment, trash talk, and historical comparison.
+## Next phase: BDI Fantasy HQ
 
+Add a second league ID to configuration and merge both datasets into:
 
-## v4.1 polish
-- Week 1 is shown before the NFL regular season begins.
-- Future 0-0 scheduled matchups are excluded from H2H ties/history.
-- H2H VS badge alignment refined.
+- Conference A / Conference B standings
+- Combined 20-team power rankings
+- Weekly awards
+- Points-for playoff cut line (top 3 per conference)
+- Weeks 15–17 custom 6 → 4 → 2 championship series
+- All-time league records and head-to-head history
+
+## Sleeper API
+
+This app uses `https://api.sleeper.app/v1`. Sleeper's public API is read-only and does not require an API token.

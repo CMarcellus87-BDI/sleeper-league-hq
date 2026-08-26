@@ -10,6 +10,119 @@
 @media(max-width:850px){.hall-grid,.hall-grid.thirds,.explorer-grid{grid-template-columns:1fr}.hall-grid.thirds>.panel:first-child,.explorer-hero{grid-column:auto}.record-showcase{grid-template-columns:1fr}.stat-grid.five{grid-template-columns:1fr 1fr}.matchup-card{grid-template-columns:1fr}.matchup-card>div,.matchup-card>div:last-child{flex-direction:row}.matchup-card>span{display:none}}
 @media(max-width:520px){.stat-grid.five{grid-template-columns:1fr}.trophy-wall{grid-template-columns:1fr}.podium-row,.rank-row{grid-template-columns:30px minmax(0,1fr) auto}.explorer-hero h2{font-size:22px}}
 
-/* v4.1 polish: visually center the VS badge between manager selectors. */
-.matchup-selectors{align-items:center}.matchup-selectors label{align-self:stretch;display:flex;flex-direction:column;justify-content:flex-end}.versus-badge{align-self:end;margin-bottom:0}
-@media(max-width:700px){.matchup-selectors{align-items:stretch}.versus-badge{align-self:center;margin:2px 0}}
+/* v5 mobile-first usability pass */
+@media(max-width:1050px){
+  body{padding-bottom:78px}
+  .app-shell{display:block;min-height:0}
+  .sidebar{position:fixed;left:0;right:0;bottom:0;top:auto;height:auto;padding:7px max(8px,env(safe-area-inset-right)) calc(7px + env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left));border:0;border-top:1px solid #2c343a;background:rgba(7,10,13,.96);backdrop-filter:blur(18px);z-index:100}
+  .sidebar .brand,.sidebar .motto,.sidebar .api-state{display:none}
+  .nav{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:2px;padding:0;overflow:visible}
+  .nav-item{min-width:0;width:100%;height:58px;margin:0;padding:6px 2px;display:flex;flex-direction:column;justify-content:center;gap:4px;border:0;border-radius:8px;text-align:center;font-size:8px;line-height:1.05}
+  .nav-item .nav-icon{width:auto;font-size:17px;line-height:1}
+  .nav-item.active{background:#17140c;box-shadow:none;border:0;color:var(--gold2)}
+  .content{padding:0 18px 16px;max-width:none}
+}
+@media(max-width:700px){
+  body{background:radial-gradient(circle at 80% 0,rgba(127,84,15,.15),transparent 18rem),linear-gradient(180deg,#07090d,#080b0f 55%,#06080a)}
+  .content{padding:0 12px 12px}
+  .hero{min-height:0;padding:22px 2px 17px;margin-bottom:13px;display:block}
+  .hero:before{width:250px;height:180px;right:-70px;top:-60px}
+  .hero-art{right:2px;top:15px;font-size:96px}
+  .hero h1{max-width:330px;font-size:35px;line-height:.95}
+  .hero h1 em{font-size:15px;letter-spacing:.17em;text-align:left;margin-top:7px}
+  .hero-subtitle{max-width:280px;margin-top:11px;font-size:8px;line-height:1.55}
+  .live-card{min-width:0;max-width:none;width:100%;margin-top:15px;padding:10px 12px;display:grid;grid-template-columns:1fr auto;gap:5px 12px;align-items:center}
+  .live-card small{margin:0;grid-column:1/2;font-size:8px}
+  .live-card button{grid-column:2;grid-row:1/3}
+
+  .stat-grid,.stat-grid.five{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:10px}
+  .stat-card{min-width:0;padding:12px 12px}
+  .stat-card strong{font-size:17px;margin:5px 0 3px}
+  .stat-card>span,.stat-card>small{font-size:8px}
+  .stat-grid.five .stat-card:nth-child(3){grid-column:1/-1;display:grid;grid-template-columns:1fr auto;align-items:center;column-gap:10px}
+  .stat-grid.five .stat-card:nth-child(3)>span,.stat-grid.five .stat-card:nth-child(3)>small{grid-column:1}
+  .stat-grid.five .stat-card:nth-child(3)>strong{grid-column:2;grid-row:1/3;margin:0;font-size:20px}
+
+  .overview-grid{gap:10px}
+  .lower-grid{margin-top:10px}
+  .panel{padding:13px;border-radius:10px}
+  .panel-head{gap:8px;margin-bottom:10px}
+  .panel-head h2,.callout-panel h2{font-size:16px}
+  .text-button{font-size:9px;white-space:nowrap}
+  .pill{font-size:7px;padding:4px 7px}
+  table{font-size:11px}
+  th{font-size:7px;padding:7px 6px}
+  td{padding:10px 6px}
+  .overview-table table th:nth-child(5),.overview-table table td:nth-child(5){display:none}
+  .full-standings-table table th:nth-child(3),.full-standings-table table td:nth-child(3),.full-standings-table table th:nth-child(6),.full-standings-table table td:nth-child(6),.full-standings-table table th:nth-child(7),.full-standings-table table td:nth-child(7){display:none}
+  .franchise-table table th:nth-child(3),.franchise-table table td:nth-child(3),.franchise-table table th:nth-child(5),.franchise-table table td:nth-child(5),.franchise-table table th:nth-child(8),.franchise-table table td:nth-child(8){display:none}
+  .season-record-table table th:nth-child(6),.season-record-table table td:nth-child(6){display:none}
+  .player-record-table table th:nth-child(6),.player-record-table table td:nth-child(6){display:none}
+
+  .section-banner{padding:16px 15px;margin-bottom:10px;gap:10px}
+  .section-banner h2{font-size:20px}
+  .section-banner p:last-child{font-size:9px;line-height:1.45}
+  .history-count{min-width:65px}
+  .history-count strong{font-size:28px}
+  .history-count span{font-size:7px}
+  .banner-swords,.banner-star{font-size:28px}
+
+  .trophy-wall{display:flex;grid-template-columns:none;gap:9px;overflow-x:auto;scroll-snap-type:x mandatory;padding:1px 1px 10px;margin:0 -2px 10px;scrollbar-width:none}
+  .trophy-wall::-webkit-scrollbar{display:none}
+  .trophy-card{flex:0 0 min(78vw,270px);min-height:135px;scroll-snap-align:start;padding:15px}
+  .trophy-icon{font-size:27px}
+
+  .history-columns,.history-row{grid-template-columns:44px minmax(0,1fr) 48px 20px;gap:6px;padding-left:5px;padding-right:5px}
+  .history-columns.ledger-cols,.history-row.ledger-row{grid-template-columns:44px minmax(0,1fr) 50px 20px}
+  .history-row{padding-top:10px;padding-bottom:10px}
+  .history-champ strong{font-size:10px}
+  .champ-record{font-size:9px}
+
+  .matchup-card{padding:10px;gap:4px}
+  .matchup-card>div,.matchup-card>div:last-child{flex-direction:row}
+  .matchup-card b{font-size:14px}
+  .matchup-card strong{font-size:9px}
+
+  .hall-grid,.hall-grid.thirds,.explorer-grid{gap:10px}
+  .podium-row,.rank-row{padding:10px}
+  .record-showcase{gap:8px}
+  .showcase-card{min-height:0;padding:13px}
+  .showcase-icon{margin-bottom:8px}
+  .showcase-card strong{font-size:21px;margin:6px 0}
+
+  .matchup-selectors{gap:8px;margin-bottom:12px}
+  .matchup-selectors select{width:100%;min-width:0}
+  .versus-badge{height:34px}
+  .h2h-scoreboard{margin-bottom:10px}
+  .h2h-scoreboard>div{padding:12px 8px}
+  .h2h-side strong{font-size:26px}
+  .h2h-details{gap:10px}
+  .h2h-table{max-height:430px;overflow:auto}
+  .h2h-table table{min-width:620px}
+
+  .records-toolbar{margin-bottom:10px}
+  .record-tabs{width:100%;display:grid;grid-template-columns:1fr 1fr}
+  .record-tab{padding:10px 8px}
+  .explorer-hero{padding:15px}
+  .explorer-hero h2{font-size:21px}
+  .explorer-hero>span{font-size:34px}
+  .bracket-summary>div{grid-template-columns:78px minmax(0,1fr);padding:9px 10px}
+  footer{padding-bottom:8px;font-size:7px}
+}
+@media(max-width:430px){
+  body{padding-bottom:72px}
+  .sidebar{padding-left:4px;padding-right:4px}
+  .nav-item{height:54px;font-size:7px;padding-left:0;padding-right:0}
+  .nav-item .nav-icon{font-size:16px}
+  .hero h1{font-size:31px}
+  .stat-grid,.stat-grid.five{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .stat-card strong{font-size:15px}
+  .panel-head{align-items:flex-start}
+  .panel-head .text-button{max-width:92px;white-space:normal;text-align:right;line-height:1.35}
+  .section-banner{align-items:flex-start}
+  .section-banner .banner-swords,.section-banner .banner-star{display:none}
+  .history-columns{font-size:7px}
+  .full-standings-table table th:nth-child(1),.full-standings-table table td:nth-child(1){width:24px}
+  .franchise-table table{min-width:520px}
+  .franchise-table{overflow-x:auto}
+}
