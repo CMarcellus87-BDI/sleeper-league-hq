@@ -48,3 +48,11 @@ Add a second league ID to configuration and merge both datasets into:
 ## Sleeper API
 
 This app uses `https://api.sleeper.app/v1`. Sleeper's public API is read-only and does not require an API token.
+
+
+## v6.2 performance update
+- Trade Center now loads one season at a time instead of crawling the full dynasty archive.
+- Current season is selected by default.
+- Previously loaded seasons are cached in-memory for instant switching.
+- Draft-pick resolution only loads draft seasons actually referenced by the selected season's trades.
+- All Seasons remains available as an explicit slower opt-in.

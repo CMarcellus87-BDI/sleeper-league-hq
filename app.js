@@ -4,7 +4,7 @@ const CONFIG = {
   maxHistorySeasons: 20,
   maxWeeksPerSeason: 18,
   matchupConcurrency: 4,
-  version: '6.1.0'
+  version: '6.2.0'
 };
 
 const state = {
@@ -22,9 +22,13 @@ const state = {
   tradesLoaded: false,
   tradesPromise: null,
   trades: [],
+  tradesBySeason: new Map(),
+  tradePromisesBySeason: new Map(),
   draftResolutionsLoaded: false,
   draftResolutionsPromise: null,
-  draftResolutions: new Map()
+  draftResolutions: new Map(),
+  draftResolutionSeasons: new Set(),
+  draftResolutionPromises: new Map()
 };
 
 const $ = id => document.getElementById(id);
@@ -237,53 +241,97 @@ function rosterTradeIdentity(item, rosterId){
 function pickLabel(p){return `${p.season} Round ${p.round}`;}
 function pickResolutionKey(season, round, rosterId){return `${season}|${Number(round)}|${Number(rosterId)}`;}
 function pickSlotLabel(round, slot){return `${Number(round)}.${String(Number(slot)).padStart(2,'0')}`;}
-async function loadDraftResolutions(){
-  if(state.draftResolutionsLoaded)return;
-  if(state.draftResolutionsPromise)return state.draftResolutionsPromise;
-  state.draftResolutionsPromise=(async()=>{
-    const draftJobs=[];
-    for(const item of state.history){
-      const drafts=await api(`/league/${item.league.league_id}/drafts`).catch(()=>[]);
-      (Array.isArray(drafts)?drafts:[]).filter(d=>d?.draft_id&&d.status==='complete').forEach(d=>draftJobs.push({item,draft:d}));
-    }
-    let cursor=0;
+async function loadDraftResolutionsForSeason(season){
+  const seasonKey=String(season);
+  if(state.draftResolutionSeasons.has(seasonKey))return;
+  if(state.draftResolutionPromises.has(seasonKey))return state.draftResolutionPromises.get(seasonKey);
+  const promise=(async()=>{
+    const item=state.history.find(h=>String(h.league.season)===seasonKey);
+    if(!item){state.draftResolutionSeasons.add(seasonKey);return;}
+    const drafts=await api(`/league/${item.league.league_id}/drafts`).catch(()=>[]);
+    const complete=(Array.isArray(drafts)?drafts:[]).filter(d=>d?.draft_id&&d.status==='complete');
     const candidates=new Map();
+    await Promise.all(complete.map(async draft=>{
+      const [detail,picks]=await Promise.all([
+        api(`/draft/${draft.draft_id}`).catch(()=>draft),
+        api(`/draft/${draft.draft_id}/picks`).catch(()=>[])
+      ]);
+      const slotMap=detail?.slot_to_roster_id||draft?.slot_to_roster_id||{};
+      const rounds=Number(detail?.settings?.rounds||draft?.settings?.rounds||99);
+      for(const pick of (Array.isArray(picks)?picks:[])){
+        const slot=Number(pick.draft_slot||0);
+        const originalRoster=Number(slotMap[String(slot)]||0);
+        if(!originalRoster||!pick.round)continue;
+        const draftSeason=String(detail?.season||draft?.season||item.league.season);
+        const key=pickResolutionKey(draftSeason,pick.round,originalRoster);
+        const player=playerInfo(pick.player_id);
+        const candidate={season:draftSeason,round:Number(pick.round),slot,originalRoster,playerId:pick.player_id,playerName:player.name,playerMeta:player.meta,draftId:draft.draft_id,rounds,startTime:Number(detail?.start_time||draft?.start_time||0)};
+        const existing=state.draftResolutions.get(key)||candidates.get(key);
+        if(!existing||candidate.rounds<existing.rounds||(candidate.rounds===existing.rounds&&candidate.startTime>existing.startTime))candidates.set(key,candidate);
+      }
+    }));
+    candidates.forEach((value,key)=>state.draftResolutions.set(key,value));
+    state.draftResolutionSeasons.add(seasonKey);
+  })().finally(()=>state.draftResolutionPromises.delete(seasonKey));
+  state.draftResolutionPromises.set(seasonKey,promise);
+  return promise;
+}
+async function loadDraftResolutionsForTrades(txs){
+  const current=Number(state.league?.season||0);
+  const seasons=[...new Set(txs.flatMap(t=>(t.draft_picks||[]).map(p=>String(p.season))).filter(s=>Number(s)<=current))];
+  await Promise.all(seasons.map(loadDraftResolutionsForSeason));
+}
+function resolvedPick(p){return state.draftResolutions.get(pickResolutionKey(p.season,p.round,p.roster_id))||null;}
+function tradeSeasonItem(season){return state.history.find(item=>String(item.league.season)===String(season))||null;}
+function populateTradeSeasons(){
+  const seasons=state.history.map(item=>String(item.league.season)).sort((a,b)=>Number(b)-Number(a));
+  $('trade-season').innerHTML=seasons.map(s=>`<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('')+'<option value="all">All seasons (slow)</option>';
+  const current=String(state.league?.season||seasons[0]||'');
+  $('trade-season').value=seasons.includes(current)?current:(seasons[0]||'all');
+}
+async function loadTradesForSeason(season){
+  const seasonKey=String(season);
+  if(state.tradesBySeason.has(seasonKey))return state.tradesBySeason.get(seasonKey);
+  if(state.tradePromisesBySeason.has(seasonKey))return state.tradePromisesBySeason.get(seasonKey);
+  const item=tradeSeasonItem(seasonKey);
+  if(!item){state.tradesBySeason.set(seasonKey,[]);return [];}
+  const promise=(async()=>{
+    const rounds=Array.from({length:CONFIG.maxWeeksPerSeason+1},(_,i)=>i);
+    let cursor=0;const found=new Map();
     const workers=Array.from({length:4},async()=>{
-      while(cursor<draftJobs.length){
-        const job=draftJobs[cursor++];
-        const draftId=job.draft.draft_id;
-        const [detail,picks]=await Promise.all([api(`/draft/${draftId}`).catch(()=>job.draft),api(`/draft/${draftId}/picks`).catch(()=>[])]);
-        const slotMap=detail?.slot_to_roster_id||job.draft?.slot_to_roster_id||{};
-        const rounds=Number(detail?.settings?.rounds||job.draft?.settings?.rounds||99);
-        for(const pick of (Array.isArray(picks)?picks:[])){
-          const slot=Number(pick.draft_slot||0);
-          const originalRoster=Number(slotMap[String(slot)]||0);
-          if(!originalRoster||!pick.round)continue;
-          const season=String(detail?.season||job.draft?.season||job.item.league.season);
-          const key=pickResolutionKey(season,pick.round,originalRoster);
-          const player=playerInfo(pick.player_id);
-          const candidate={season,round:Number(pick.round),slot,originalRoster,playerId:pick.player_id,playerName:player.name,playerMeta:player.meta,draftId,rounds,startTime:Number(detail?.start_time||job.draft?.start_time||0)};
-          const existing=candidates.get(key);
-          if(!existing||candidate.rounds<existing.rounds||(candidate.rounds===existing.rounds&&candidate.startTime>existing.startTime))candidates.set(key,candidate);
-        }
+      while(cursor<rounds.length){
+        const round=rounds[cursor++];
+        const txs=await api(`/league/${item.league.league_id}/transactions/${round}`).catch(()=>[]);
+        (Array.isArray(txs)?txs:[]).filter(t=>t.type==='trade'&&t.status==='complete').forEach(t=>{
+          if(!found.has(t.transaction_id))found.set(t.transaction_id,{...t,season:item.league.season,item});
+        });
       }
     });
     await Promise.all(workers);
-    state.draftResolutions=candidates;
-    state.draftResolutionsLoaded=true;
-  })();
-  return state.draftResolutionsPromise;
+    const txs=[...found.values()].sort((a,b)=>Number(b.created||0)-Number(a.created||0));
+    state.tradesBySeason.set(seasonKey,txs);
+    await loadPlayerMap();
+    await loadDraftResolutionsForTrades(txs);
+    state.trades=[...state.tradesBySeason.values()].flat().sort((a,b)=>Number(b.created||0)-Number(a.created||0));
+    return txs;
+  })().finally(()=>state.tradePromisesBySeason.delete(seasonKey));
+  state.tradePromisesBySeason.set(seasonKey,promise);
+  return promise;
 }
-function resolvedPick(p){return state.draftResolutions.get(pickResolutionKey(p.season,p.round,p.roster_id))||null;}
+async function loadSelectedTradeSeason(){
+  const selected=$('trade-season').value||String(state.league?.season||'');
+  $('trades-loading').classList.remove('hidden');$('trades-content').classList.add('hidden');
+  $('trades-loading').innerHTML='<span class="spinner"></span>Loading '+escapeHtml(selected==='all'?'all trade seasons':`${selected} trades`)+'…';
+  if(selected==='all'){
+    const seasons=state.history.map(item=>String(item.league.season));
+    for(const season of seasons)await loadTradesForSeason(season);
+  }else await loadTradesForSeason(selected);
+  renderTrades();
+}
 async function loadTrades(){
-  if(state.tradesLoaded)return;if(state.tradesPromise)return state.tradesPromise;
-  state.tradesPromise=(async()=>{
-    const tasks=[];state.history.forEach(item=>{for(let round=0;round<=CONFIG.maxWeeksPerSeason;round++)tasks.push({item,round});});let cursor=0;const found=new Map();
-    const workers=Array.from({length:5},async()=>{while(cursor<tasks.length){const {item,round}=tasks[cursor++];const txs=await api(`/league/${item.league.league_id}/transactions/${round}`).catch(()=>[]);(Array.isArray(txs)?txs:[]).filter(t=>t.type==='trade'&&t.status==='complete').forEach(t=>{if(!found.has(t.transaction_id))found.set(t.transaction_id,{...t,season:item.league.season,item});});}});await Promise.all(workers);
-    state.trades=[...found.values()].sort((a,b)=>Number(b.created||0)-Number(a.created||0));state.tradesLoaded=true;await loadPlayerMap();await loadDraftResolutions();populateTradeSeasons();renderTrades();
-  })();return state.tradesPromise;
+  populateTradeSeasons();
+  return loadSelectedTradeSeason();
 }
-function populateTradeSeasons(){const seasons=[...new Set(state.trades.map(t=>String(t.season)))].sort((a,b)=>Number(b)-Number(a));$('trade-season').innerHTML='<option value="all">All seasons</option>'+seasons.map(s=>`<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');}
 function tradeAssets(t, rosterId){
   const received=[];Object.entries(t.adds||{}).filter(([,rid])=>Number(rid)===Number(rosterId)).forEach(([pid])=>received.push({type:'player',label:playerInfo(pid).name,meta:playerInfo(pid).meta}));
   (t.draft_picks||[]).filter(p=>Number(p.owner_id)===Number(rosterId)).forEach(p=>{
@@ -300,9 +348,11 @@ function tradeAssets(t, rosterId){
 }
 function tradeAssetCount(t){return Object.keys(t.adds||{}).length+(t.draft_picks||[]).length+(t.waiver_budget||[]).length;}
 function renderTrades(){
-  const filter=$('trade-season').value||'all';const txs=state.trades.filter(t=>filter==='all'||String(t.season)===filter);const activity=new Map();let picks=0;txs.forEach(t=>{(t.roster_ids||[]).forEach(r=>{const n=rosterTradeIdentity(t.item,r);activity.set(n,(activity.get(n)||0)+1);});picks+=(t.draft_picks||[]).length;});const active=[...activity.entries()].sort((a,b)=>b[1]-a[1])[0];const biggest=[...txs].sort((a,b)=>tradeAssetCount(b)-tradeAssetCount(a))[0];
+  const filter=$('trade-season').value||String(state.league?.season||'');
+  const txs=filter==='all'?[...state.tradesBySeason.values()].flat():state.tradesBySeason.get(String(filter))||[];
+  const activity=new Map();let picks=0;txs.forEach(t=>{(t.roster_ids||[]).forEach(r=>{const n=rosterTradeIdentity(t.item,r);activity.set(n,(activity.get(n)||0)+1);});picks+=(t.draft_picks||[]).length;});const active=[...activity.entries()].sort((a,b)=>b[1]-a[1])[0];const biggest=[...txs].sort((a,b)=>tradeAssetCount(b)-tradeAssetCount(a))[0];
   $('trade-count').textContent=txs.length;$('trade-most-active').textContent=active?.[0]||'—';$('trade-most-active-detail').textContent=active?`${active[1]} trades involved`:'—';$('trade-biggest').textContent=biggest?tradeAssetCount(biggest):'—';$('trade-picks').textContent=picks;
-  $('trade-list').innerHTML=txs.length?txs.map(t=>{const ids=t.roster_ids||[];const date=t.created?new Date(Number(t.created)).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}):`${t.season} W${t.leg||'?'}`;return `<article class="trade-card"><div class="trade-card-head"><div><span>${escapeHtml(t.season)} • Week ${t.leg??'—'}</span><strong>${escapeHtml(date)}</strong></div><b>${tradeAssetCount(t)} assets</b></div><div class="trade-sides">${ids.map((rid,i)=>{const assets=tradeAssets(t,rid);return `<div class="trade-side"><h3>${escapeHtml(rosterTradeIdentity(t.item,rid))}</h3><span class="received-label">RECEIVED</span>${assets.length?assets.map(a=>`<div class="asset ${a.type}"><span>${a.type==='pick'?'◇':a.type==='faab'?'$':'●'}</span><div><strong>${escapeHtml(a.label)}</strong><small>${escapeHtml(a.meta||'')}</small></div></div>`).join(''):'<div class="asset empty"><div><strong>No mapped incoming assets</strong><small>Sleeper transaction metadata may be incomplete.</small></div></div>'}</div>${i<ids.length-1?'<div class="trade-arrow">⇄</div>':''}`;}).join('')}</div></article>`;}).join(''):'<article class="panel empty-cell">No completed trades found for this season.</article>';
+  $('trade-list').innerHTML=txs.length?txs.map(t=>{const ids=t.roster_ids||[];const date=t.created?new Date(Number(t.created)).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}):`${t.season} W${t.leg||'?'}`;return `<article class="trade-card"><div class="trade-card-head"><div><span>${escapeHtml(t.season)} • Week ${t.leg??'—'}</span><strong>${escapeHtml(date)}</strong></div><b>${tradeAssetCount(t)} assets</b></div><div class="trade-sides">${ids.map((rid,i)=>{const assets=tradeAssets(t,rid);return `<div class="trade-side"><h3>${escapeHtml(rosterTradeIdentity(t.item,rid))}</h3><span class="received-label">RECEIVED</span>${assets.length?assets.map(a=>`<div class="asset ${a.type}"><span>${a.type==='pick'?'◇':a.type==='faab'?'$':'●'}</span><div><strong>${escapeHtml(a.label)}</strong><small>${escapeHtml(a.meta||'')}</small></div></div>`).join(''):'<div class="asset empty"><div><strong>No mapped incoming assets</strong><small>Sleeper transaction metadata may be incomplete.</small></div></div>'}</div>${i<ids.length-1?'<div class="trade-arrow">⇄</div>':''}`;}).join('')}</div></article>`;}).join(''):`<article class="panel empty-cell">No completed trades found for ${escapeHtml(filter==='all'?'the loaded seasons':filter)}.</article>`;
   $('trades-loading').classList.add('hidden');$('trades-content').classList.remove('hidden');
 }
 
@@ -313,5 +363,5 @@ async function navigate(name){activateView(name);try{if(['franchises','headtohea
 
 async function load(){clearError();setApiState('loading','Connecting to Sleeper');$('league-meta').textContent='Loading league...';try{state.league=await api(`/league/${CONFIG.primaryLeagueId}`);[state.users,state.rosters,state.nflState]=await Promise.all([api(`/league/${CONFIG.primaryLeagueId}/users`),api(`/league/${CONFIG.primaryLeagueId}/rosters`),api('/state/nfl').catch(()=>null)]);renderCurrentLeague();renderCurrentWeek();setApiState('','Live Sleeper data');try{await loadHistory();setApiState('','Live + history ready');loadAllMatchups().then(()=>{renderOverviewLegends();}).catch(()=>{});}catch(e){showError(`Current league loaded, but history could not finish: ${e.message}`);}}catch(e){showError(`Could not load Sleeper league ${CONFIG.primaryLeagueId}: ${e.message}`);}}
 
-$$('.nav-item').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.view)));$$('[data-jump]').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.jump)));$('season-select').addEventListener('change',e=>renderStandingsSeason(Number(e.target.value)));$('explorer-season').addEventListener('change',e=>renderSeasonExplorer(Number(e.target.value)));$('franchise-select').addEventListener('change',e=>renderFranchiseProfile(e.target.value));$('trade-season').addEventListener('change',renderTrades);$('h2h-a').addEventListener('change',renderH2H);$('h2h-b').addEventListener('change',renderH2H);$$('.record-tab').forEach(b=>b.addEventListener('click',()=>showRecordView(b.dataset.recordView)));$('refresh-btn').addEventListener('click',()=>location.reload());
+$$('.nav-item').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.view)));$$('[data-jump]').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.jump)));$('season-select').addEventListener('change',e=>renderStandingsSeason(Number(e.target.value)));$('explorer-season').addEventListener('change',e=>renderSeasonExplorer(Number(e.target.value)));$('franchise-select').addEventListener('change',e=>renderFranchiseProfile(e.target.value));$('trade-season').addEventListener('change',loadSelectedTradeSeason);$('h2h-a').addEventListener('change',renderH2H);$('h2h-b').addEventListener('change',renderH2H);$$('.record-tab').forEach(b=>b.addEventListener('click',()=>showRecordView(b.dataset.recordView)));$('refresh-btn').addEventListener('click',()=>location.reload());
 load();
