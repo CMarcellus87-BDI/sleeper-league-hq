@@ -7,8 +7,13 @@ A lightweight fantasy-football command center powered by Sleeper's public read-o
 - Live league metadata
 - Live standings from rosters/users
 - League leaders and points leaders
+- Preseason-safe home matchup view: defaults to regular-season Week 1 until the NFL regular season begins
 - Dynasty history traversal through `previous_league_id`
 - Season selector
+- Franchise profiles and career leaderboard
+- League record book and head-to-head archive
+- Trade Center with historical draft-pick resolution (`2024 1.04 → Player`) when Sleeper draft history supports the mapping
+- W-L records intentionally ignore Sleeper tie counters for this league
 - GitHub Pages-friendly: no backend and no build step
 
 The prototype is currently configured for league ID `1326583431680761856`.
