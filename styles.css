@@ -9,3 +9,7 @@
 @media(max-width:1180px){.stat-grid.five{grid-template-columns:repeat(3,minmax(0,1fr))}.hall-grid.thirds{grid-template-columns:1fr 1fr}.hall-grid.thirds>.panel:first-child{grid-column:1/-1}.record-showcase{grid-template-columns:1fr 1fr}}
 @media(max-width:850px){.hall-grid,.hall-grid.thirds,.explorer-grid{grid-template-columns:1fr}.hall-grid.thirds>.panel:first-child,.explorer-hero{grid-column:auto}.record-showcase{grid-template-columns:1fr}.stat-grid.five{grid-template-columns:1fr 1fr}.matchup-card{grid-template-columns:1fr}.matchup-card>div,.matchup-card>div:last-child{flex-direction:row}.matchup-card>span{display:none}}
 @media(max-width:520px){.stat-grid.five{grid-template-columns:1fr}.trophy-wall{grid-template-columns:1fr}.podium-row,.rank-row{grid-template-columns:30px minmax(0,1fr) auto}.explorer-hero h2{font-size:22px}}
+
+/* v4.1 polish: visually center the VS badge between manager selectors. */
+.matchup-selectors{align-items:center}.matchup-selectors label{align-self:stretch;display:flex;flex-direction:column;justify-content:flex-end}.versus-badge{align-self:end;margin-bottom:0}
+@media(max-width:700px){.matchup-selectors{align-items:stretch}.versus-badge{align-self:center;margin:2px 0}}

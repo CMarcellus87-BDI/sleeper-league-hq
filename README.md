@@ -31,3 +31,9 @@ No backend, build process, or API token is required.
 ## Custom indexes
 
 The DOL GOAT, Pain, and Rivalry indexes are custom league analytics calculated from Sleeper data. Their formulas are shown in the UI and are intended for entertainment, trash talk, and historical comparison.
+
+
+## v4.1 polish
+- Week 1 is shown before the NFL regular season begins.
+- Future 0-0 scheduled matchups are excluded from H2H ties/history.
+- H2H VS badge alignment refined.
