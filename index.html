@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sleeper League HQ</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">HQ</div>
+        <div><strong>Sleeper League HQ</strong><span>Dynasty + redraft analytics</span></div>
+      </div>
+      <nav id="nav">
+        <button class="nav-item active" data-view="overview">Overview</button>
+        <button class="nav-item" data-view="standings">Standings</button>
+        <button class="nav-item" data-view="history">League History</button>
+      </nav>
+      <div class="sidebar-footer">
+        <span class="status-dot"></span>
+        <span id="api-status">Connecting to Sleeper</span>
+      </div>
+    </aside>
+
+    <main class="content">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">LEAGUE COMMAND CENTER</p>
+          <h1 id="league-name">Loading league…</h1>
+          <p id="league-meta" class="muted">Sleeper league 1326583431680761856</p>
+        </div>
+        <div class="topbar-actions">
+          <select id="season-select" aria-label="Season"></select>
+          <button id="refresh-btn">Refresh</button>
+        </div>
+      </header>
+
+      <section id="error-banner" class="error-banner hidden"></section>
+
+      <section id="overview-view" class="view active-view">
+        <div class="stat-grid">
+          <article class="stat-card"><span>Teams</span><strong id="stat-teams">—</strong><small>active rosters</small></article>
+          <article class="stat-card"><span>Season</span><strong id="stat-season">—</strong><small id="stat-status">—</small></article>
+          <article class="stat-card"><span>League Leader</span><strong id="stat-leader">—</strong><small id="stat-leader-detail">—</small></article>
+          <article class="stat-card"><span>Points Leader</span><strong id="stat-pf-leader">—</strong><small id="stat-pf-detail">—</small></article>
+        </div>
+
+        <div class="two-col">
+          <article class="panel">
+            <div class="panel-head"><div><p class="eyebrow">CURRENT TABLE</p><h2>Standings</h2></div><span class="pill">Live from Sleeper</span></div>
+            <div class="table-wrap"><table><thead><tr><th>#</th><th>Team</th><th>W-L-T</th><th>PF</th><th>PA</th></tr></thead><tbody id="overview-standings"></tbody></table></div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-head"><div><p class="eyebrow">DYNASTY ARCHIVE</p><h2>History Snapshot</h2></div></div>
+            <div id="history-summary" class="history-summary"><div class="skeleton tall"></div></div>
+          </article>
+        </div>
+      </section>
+
+      <section id="standings-view" class="view">
+        <article class="panel">
+          <div class="panel-head"><div><p class="eyebrow">FULL LEAGUE</p><h2>Standings</h2></div></div>
+          <div class="table-wrap"><table><thead><tr><th>#</th><th>Team</th><th>Manager</th><th>Record</th><th>PF</th><th>PA</th><th>Moves</th></tr></thead><tbody id="full-standings"></tbody></table></div>
+        </article>
+      </section>
+
+      <section id="history-view" class="view">
+        <div class="history-hero">
+          <div><p class="eyebrow">FRANCHISE ARCHIVE</p><h2>League History</h2><p class="muted">Sleeper links dynasty seasons with <code>previous_league_id</code>. This page walks that chain automatically.</p></div>
+          <div class="history-count"><strong id="history-count">—</strong><span>seasons found</span></div>
+        </div>
+        <div id="history-cards" class="history-cards"></div>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
