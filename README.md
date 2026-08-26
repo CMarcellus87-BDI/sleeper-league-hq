@@ -1,23 +1,23 @@
 # Dynasty of Legends — Sleeper League HQ
 
-A no-backend GitHub Pages dashboard for Sleeper league `1326583431680761856`.
+A GitHub Pages-friendly dashboard for Sleeper league `1326583431680761856`.
 
-## v2 features
+## V3
 
 - Live current-season standings
-- True historical champions from Sleeper's winners bracket
-- Cleaner championship ledger: year / champion / record / trophy
+- Dynasty history by following Sleeper's `previous_league_id` chain
+- Champions resolved from each season's winners bracket
+- Cleaner history snapshot: Year → Champion → Record → Trophy
 - All-time championship leaders
-- Cross-season manager head-to-head records and matchup history
-- Highest individual player game scores across linked seasons
-- Dynasty of Legends custom visual identity
+- Head-to-head rivalry archive across linked seasons, including playoffs
+- Highest individual player scoring performances from historical matchup data
+- Progressive loading: historical matchups and the Sleeper NFL player directory load only when needed
+- Custom Dynasty of Legends SVG crest
 
-## Deploy
+## Hosting
 
-This repo is designed for GitHub Pages. Serve the root of the `main` branch.
+This project is intentionally static: `index.html`, `styles.css`, `app.js`, and `dynasty-crest.svg`. It can run directly on GitHub Pages without a backend.
 
-## Data source
+## Notes
 
-The browser reads the public Sleeper API directly. `previous_league_id` is followed backward to build league history. Historical matchup pages are loaded for linked seasons; the Sleeper NFL player directory is loaded to convert player IDs into names.
-
-No API key or backend is required.
+Sleeper's player directory is a large endpoint, so the Records page loads it only on demand. If Sleeper rate-limits or temporarily fails, the current-season UI should still remain usable and error messages are shown inline.
