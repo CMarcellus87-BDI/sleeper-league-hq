@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800;900&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=8.0.0" />
+  <link rel="stylesheet" href="styles.css?v=8.3.1" />
 </head>
 <body>
   <div class="app-shell">
@@ -24,6 +24,7 @@
         <button class="nav-item" data-view="franchises"><span class="nav-icon">★</span><span>Legends</span></button>
         <button class="nav-item" data-view="trades"><span class="nav-icon">⇄</span><span>Trades</span></button>
         <button class="nav-item" data-view="tradelab"><span class="nav-icon">⚖</span><span>Trade Lab</span></button>
+        <button class="nav-item" data-view="assistant"><span class="nav-icon">✦</span><span>Assistant</span></button>
         <button class="nav-item" data-view="headtohead"><span class="nav-icon">⚔</span><span>H2H</span></button>
         <button class="nav-item" data-view="records"><span class="nav-icon">↗</span><span>Records</span></button>
         <button class="nav-item" data-view="season"><span class="nav-icon">◫</span><span>Seasons</span></button>
@@ -165,6 +166,22 @@
           <article class="panel trade-context-panel" id="trade-lab-context"><div class="context-empty">Build a deal to see lineup, positional depth, and draft-capital impact.</div></article>
         </div>
       </section>
+
+      <section id="assistant-view" class="view">
+        <div class="section-banner responsive-head"><div><p class="eyebrow gold">ROSTER ASSISTANT</p><h2>What Should I Do Next?</h2><p>Actionable dynasty ideas based on this league's actual rosters, market values, positional strengths and available free agents.</p></div><label class="select-label">Franchise<select id="assistant-manager" aria-label="Roster assistant franchise"></select></label></div>
+        <div id="assistant-loading" class="inline-status hidden"><span class="spinner"></span>Analyzing roster fits and the free-agent pool…</div>
+        <div id="assistant-content" class="hidden">
+          <div class="stat-grid assistant-stats"><article class="stat-card"><span>Franchise</span><strong id="assistant-team-name">—</strong><small>selected roster</small></article><article class="stat-card"><span>Strongest Room</span><strong id="assistant-strength">—</strong><small>league rank by dynasty value</small></article><article class="stat-card"><span>Biggest Need</span><strong id="assistant-weakness">—</strong><small>league rank by dynasty value</small></article></div>
+          <div id="assistant-best-partner" class="best-partner-wrap"></div>
+          <div class="assistant-grid">
+            <article class="panel"><div class="panel-head"><div><p class="eyebrow">TRADE PARTNERS</p><h2>Suggested Frameworks</h2></div></div><p class="assistant-note">Only complementary roster fits with reasonably balanced market packages are shown. These are conversation starters, not commandments.</p><div id="assistant-trades" class="assistant-list"></div></article>
+            <article class="panel"><div class="panel-head"><div><p class="eyebrow">FREE AGENCY</p><h2>Available Upgrades</h2></div></div><p class="assistant-note">Compares unrostered players with eligible bench assets at the same position. Taxi, starters and reserve are protected from cut suggestions.</p><div id="assistant-free-agents" class="assistant-list"></div></article>
+          </div>
+          <article class="panel assistant-cuts-panel"><div class="panel-head"><div><p class="eyebrow">ROSTER BUBBLE</p><h2>Cut Candidates</h2></div></div><p class="assistant-note">Lowest-value eligible bench assets. A low value is a flag to review, not an instruction to drop a player.</p><div id="assistant-cuts" class="cut-list"></div></article>
+          <div class="market-credit">Current dynasty values by <a href="https://statsguyfantasy.com" target="_blank" rel="noopener">Stats Guy Fantasy</a>. Suggestions are generated from market value + league roster context.</div>
+        </div>
+      </section>
+
       <section id="headtohead-view" class="view">
         <div class="section-banner"><div><p class="eyebrow gold">THE GRUDGE MATCH MACHINE</p><h2>Head to Head</h2><p>Settle matchup arguments — or audit who keeps trading with whom.</p></div><span class="banner-swords">⚔</span></div>
         <div class="records-toolbar h2h-mode-toolbar"><div class="record-tabs"><button class="h2h-mode-tab record-tab active" type="button" data-h2h-mode="matchups">Matchups</button><button class="h2h-mode-tab record-tab" type="button" data-h2h-mode="trades">Trade Relationships</button></div><span id="h2h-mode-status" class="pill">Matchup archive</span></div>
@@ -207,9 +224,9 @@
         <div id="season-explorer-content" class="explorer-grid"><div class="loading-line"></div></div>
       </section>
 
-      <footer><span>DYNASTY OF LEGENDS</span><i>◆</i><span>POWERED BY SLEEPER DATA · PHASE 1 · BUILD v8.0.0</span></footer>
+      <footer><span>DYNASTY OF LEGENDS</span><i>◆</i><span>POWERED BY SLEEPER DATA · BUILD v8.3.1 · ROSTER ASSISTANT</span></footer>
     </main>
   </div>
-  <script src="app.js?v=8.0.0"></script>
+  <script src="app.js?v=8.3.1"></script>
 </body>
 </html>

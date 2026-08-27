@@ -4,7 +4,7 @@ const CONFIG = {
   maxHistorySeasons: 20,
   maxWeeksPerSeason: 18,
   matchupConcurrency: 4,
-  version: '8.0.0-phase1',
+  version: '8.3.1-assistant',
   valueApiBase: 'https://api.statsguyfantasy.com/api/v1'
 };
 
@@ -526,9 +526,10 @@ async function gradeTradesForSeason(season,txs){
   state.tradeGradePromises.set(key,promise);return promise;
 }
 function tradeGradeHtml(g,rid){
-  if(!g)return '<div class="grade-strip unavailable"><span>MARKET GRADES</span><strong>Unavailable</strong><small>Multi-team or unmapped trade</small></div>';
+  if(!g)return '';
   const isA=Number(rid)===Number(g.aRoster),nowEdge=isA?g.now.aEdge:g.now.bEdge,thenEdge=g.then?(isA?g.then.aEdge:g.then.bEdge):null;
-  return `<div class="grade-strip"><div><span>THEN</span><strong>${g.then?gradeLetter(thenEdge):'—'}</strong><small>${g.then?`${thenEdge>=0?'+':''}${thenEdge.toFixed(1)}% market edge`:'historical values unavailable'}</small></div><div><span>NOW</span><strong>${gradeLetter(nowEdge)}</strong><small>${nowEdge>=0?'+':''}${nowEdge.toFixed(1)}% outcome edge</small></div></div>`;
+  if(!g.then)return `<div class="grade-strip grade-strip-single"><div><span>CURRENT OUTCOME</span><strong>${gradeLetter(nowEdge)}</strong><small>How the assets grade today</small></div></div>`;
+  return `<div class="grade-strip"><div><span>THEN</span><strong>${gradeLetter(thenEdge)}</strong><small>Market grade when dealt</small></div><div><span>NOW</span><strong>${gradeLetter(nowEdge)}</strong><small>Current outcome grade</small></div></div>`;
 }
 function renderTradeAwards(txs,grades){
   const candidates=[];txs.forEach(t=>{const g=grades?.get(t.transaction_id);if(!g)return;candidates.push({t,g,rid:g.aRoster,name:g.aName,edge:g.now.aEdge,then:g.then?.aEdge??null});candidates.push({t,g,rid:g.bRoster,name:g.bName,edge:g.now.bEdge,then:g.then?.bEdge??null});});
@@ -536,8 +537,11 @@ function renderTradeAwards(txs,grades){
   const best=[...candidates].sort((a,b)=>b.edge-a.edge)[0],worst=[...candidates].sort((a,b)=>a.edge-b.edge)[0];
   const gamble=[...candidates].filter(x=>x.then!=null&&x.then<-3&&x.edge>8).sort((a,b)=>(b.edge-b.then)-(a.edge-a.then))[0];
   const process=[...candidates].filter(x=>x.then!=null&&x.then>3&&x.edge<-8).sort((a,b)=>(a.edge-a.then)-(b.edge-b.then))[0];
-  const card=(label,x,icon)=>x?`<article class="trade-award-card"><span>${icon}</span><small>${label}</small><strong>${escapeHtml(x.name)}</strong><b>${x.edge>=0?'+':''}${x.edge.toFixed(1)}%</b><p>${x.t.season} • ${tradeDateISO(x.t)||`Week ${x.t.leg||'?'}`}</p></article>`:'';
+  const card=(label,x,icon)=>x?`<button type="button" class="trade-award-card" data-trade-jump="${escapeHtml(x.t.transaction_id)}"><span>${icon}</span><small>${label}</small><strong>${escapeHtml(x.name)}</strong><b>${gradeLetter(x.edge)}</b><p>${x.t.season} • ${tradeDateISO(x.t)||`Week ${x.t.leg||'?'}`} • open trade →</p></button>`:'';
   $('trade-awards').innerHTML=card('Best Trade Outcome',best,'🏆')+card('Worst Trade Outcome',worst,'💀')+card('Best Gamble',gamble,'🎲')+card('Good Process, Bad Result',process,'🫠');$('trade-awards').classList.remove('hidden');
+}
+function bindTradeAwardJumps(){
+  $$('[data-trade-jump]').forEach(btn=>btn.addEventListener('click',()=>{const card=$(`trade-${btn.dataset.tradeJump}`);if(!card)return;card.scrollIntoView({behavior:'smooth',block:'center'});card.classList.add('trade-card-highlight');setTimeout(()=>card.classList.remove('trade-card-highlight'),1800);}));
 }
 function currentRosterForOwner(ownerId){return state.rosters.find(r=>r.owner_id===ownerId)||null;}
 function pickOwnerFor(originalRoster,season,round){const moved=(state.currentTradedPicks||[]).filter(p=>Number(p.roster_id)===Number(originalRoster)&&String(p.season)===String(season)&&Number(p.round)===Number(round)).sort((a,b)=>Number(b.owner_id||0)-Number(a.owner_id||0))[0];return moved?Number(moved.owner_id):Number(originalRoster);}
@@ -572,8 +576,8 @@ function renderTrades(){
   const filter=$('trade-season').value||String(state.league?.season||''),txs=filter==='all'?[...state.tradesBySeason.values()].flat():state.tradesBySeason.get(String(filter))||[];
   const activity=new Map();let picks=0;txs.forEach(t=>{(t.roster_ids||[]).forEach(r=>{const n=rosterTradeIdentity(t.item,r);activity.set(n,(activity.get(n)||0)+1);});picks+=(t.draft_picks||[]).length;});const active=[...activity.entries()].sort((a,b)=>b[1]-a[1])[0],biggest=[...txs].sort((a,b)=>tradeAssetCount(b)-tradeAssetCount(a))[0],grades=filter==='all'?null:state.tradeGradesBySeason.get(String(filter));
   $('trade-count').textContent=txs.length;$('trade-most-active').textContent=active?.[0]||'—';$('trade-most-active-detail').textContent=active?`${active[1]} trades involved`:'—';$('trade-biggest').textContent=biggest?tradeAssetCount(biggest):'—';$('trade-picks').textContent=picks;if(grades)renderTradeAwards(txs,grades);else $('trade-awards').classList.add('hidden');
-  $('trade-list').innerHTML=txs.length?txs.map(t=>{const ids=t.roster_ids||[],g=grades?.get(t.transaction_id),date=t.created?new Date(Number(t.created)).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}):`${t.season} W${t.leg||'?'}`;return `<article class="trade-card"><div class="trade-card-head"><div><span>${escapeHtml(t.season)} • Week ${t.leg??'—'}</span><strong>${escapeHtml(date)}</strong></div><b>${tradeAssetCount(t)} assets</b></div><div class="trade-sides">${ids.map((rid,i)=>{const assets=tradeAssets(t,rid);return `<div class="trade-side"><h3>${escapeHtml(rosterTradeIdentity(t.item,rid))}</h3>${tradeGradeHtml(g,rid)}<span class="received-label">RECEIVED</span>${assets.length?assets.map(a=>`<div class="asset ${a.type}"><span>${a.type.includes('pick')?'◇':a.type==='faab'?'$':'●'}</span><div><strong>${escapeHtml(a.label)}</strong><small>${escapeHtml(a.meta||'')}</small></div></div>`).join(''):'<div class="asset empty"><div><strong>No mapped incoming assets</strong><small>Sleeper transaction metadata may be incomplete.</small></div></div>'}${(t.draft_picks||[]).some(p=>Number(p.owner_id)===Number(rid)&&resolvedPick(p))?`<button type="button" class="trace-button" data-trace-id="${escapeHtml(t.transaction_id)}" data-trace-roster="${rid}">Trace what it became →</button><div class="lineage-box hidden" id="trace-${escapeHtml(t.transaction_id)}-${rid}"></div>`:''}</div>${i<ids.length-1?'<div class="trade-arrow">⇄</div>':''}`;}).join('')}</div></article>`;}).join(''):`<article class="panel empty-cell">No completed trades found for ${escapeHtml(filter==='all'?'the loaded seasons':filter)}.</article>`;
-  $('trades-loading').classList.add('hidden');$('trades-content').classList.remove('hidden');bindTraceButtons();
+  $('trade-list').innerHTML=txs.length?txs.map(t=>{const ids=t.roster_ids||[],g=grades?.get(t.transaction_id),date=t.created?new Date(Number(t.created)).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}):`${t.season} W${t.leg||'?'}`;return `<article class="trade-card" id="trade-${escapeHtml(t.transaction_id)}"><div class="trade-card-head"><div><span>${escapeHtml(t.season)} • Week ${t.leg??'—'}</span><strong>${escapeHtml(date)}</strong></div><b>${tradeAssetCount(t)} assets</b></div><div class="trade-sides">${ids.map((rid,i)=>{const assets=tradeAssets(t,rid);return `<div class="trade-side"><h3>${escapeHtml(rosterTradeIdentity(t.item,rid))}</h3>${tradeGradeHtml(g,rid)}<span class="received-label">RECEIVED</span>${assets.length?assets.map(a=>`<div class="asset ${a.type}"><span>${a.type.includes('pick')?'◇':a.type==='faab'?'$':'●'}</span><div><strong>${escapeHtml(a.label)}</strong><small>${escapeHtml(a.meta||'')}</small></div></div>`).join(''):'<div class="asset empty"><div><strong>No mapped incoming assets</strong><small>Sleeper transaction metadata may be incomplete.</small></div></div>'}${(t.draft_picks||[]).some(p=>Number(p.owner_id)===Number(rid)&&resolvedPick(p))?`<button type="button" class="trace-button" data-trace-id="${escapeHtml(t.transaction_id)}" data-trace-roster="${rid}">Trace what it became →</button><div class="lineage-box hidden" id="trace-${escapeHtml(t.transaction_id)}-${rid}"></div>`:''}</div>${i<ids.length-1?'<div class="trade-arrow">⇄</div>':''}`;}).join('')}</div></article>`;}).join(''):`<article class="panel empty-cell">No completed trades found for ${escapeHtml(filter==='all'?'the loaded seasons':filter)}.</article>`;
+  $('trades-loading').classList.add('hidden');$('trades-content').classList.remove('hidden');bindTraceButtons();bindTradeAwardJumps();
 }
 async function loadSelectedTradeSeason(){
   const selected=$('trade-season').value||String(state.league?.season||'');$('trades-loading').classList.remove('hidden');$('trades-content').classList.add('hidden');$('trades-loading').innerHTML='<span class="spinner"></span>Loading '+escapeHtml(selected==='all'?'all trade seasons':`${selected} trades`)+'…';
@@ -741,12 +745,117 @@ async function setH2HMode(mode){
   if(mode==='trades'){populateTradePartnerManagers();renderTradeRelationships();ensureTradeRelationships().then(()=>hydrateSelectedTradeRelationship()).catch(()=>{});}
 }
 
+
+function assistantManagers(){return tradeLabManagers();}
+function rosterPositionSnapshot(ownerId){
+  const pool=playerAssetPool(ownerId),positions=['QB','RB','WR','TE'];
+  const rooms=positions.map(pos=>({pos,value:positionGroupValue(pool,pos),players:pool.filter(a=>a.pos===pos).sort((a,b)=>b.value-a.value)}));
+  rooms.forEach(room=>{const leagueValues=assistantManagers().map(m=>positionGroupValue(playerAssetPool(m.ownerId),room.pos));room.rank=rankAmong(leagueValues,room.value);room.leagueSize=leagueValues.length;});
+  return rooms;
+}
+function managerLabel(ownerId){return assistantManagers().find(m=>m.ownerId===ownerId)?.name||managerName(ownerUser(ownerId))||'Franchise';}
+function pickAssetPool(ownerId){const roster=currentRosterForOwner(ownerId);return roster?currentDraftCapital(roster.roster_id).map(p=>({id:`pick:${p.season}:${p.round}:mid|orig:${p.originalRoster}`,label:`${p.season} ${['','1st','2nd','3rd','4th','5th'][p.round]||`Round ${p.round}`}`,value:Number(p.value||0),type:'pick'})).sort((a,b)=>b.value-a.value):[];}
+function balanceTradePackage(sendPlayers,receivePlayers,ownerId,partnerId){
+  const send=[...sendPlayers],receive=[...receivePlayers];let sendValue=send.reduce((n,a)=>n+a.value,0),receiveValue=receive.reduce((n,a)=>n+a.value,0);
+  const addPick=(fromOwner,toList,targetGap)=>{const picks=pickAssetPool(fromOwner).filter(p=>p.value>0);if(!picks.length)return null;return [...picks].sort((a,b)=>Math.abs(a.value-targetGap)-Math.abs(b.value-targetGap))[0]||null;};
+  if(sendValue<receiveValue*.88){const p=addPick(ownerId,send,receiveValue-sendValue);if(p){send.push(p);sendValue+=p.value;}}
+  else if(receiveValue<sendValue*.88){const p=addPick(partnerId,receive,sendValue-receiveValue);if(p){receive.push(p);receiveValue+=p.value;}}
+  return{send,receive,sendValue,receiveValue,gap:Math.abs(sendValue-receiveValue)/((sendValue+receiveValue)/2||1)*100};
+}
+function bestTradeFramework(ownerId,partnerId,userStrength,userWeak,partnerStrength,partnerWeak){
+  const mine=playerAssetPool(ownerId),theirs=playerAssetPool(partnerId);
+  const offers=mine.filter(a=>a.pos===userStrength&&a.value>0).sort((a,b)=>b.value-a.value);
+  const targets=theirs.filter(a=>a.pos===userWeak&&a.value>0).sort((a,b)=>b.value-a.value);
+  if(!offers.length||!targets.length)return null;
+  let best=null;
+  for(const target of targets.slice(0,4))for(const offer of offers.slice(0,5)){
+    let pkg=balanceTradePackage([offer],[target],ownerId,partnerId);
+    if(pkg.gap>18)continue;
+    const score=pkg.gap+(offer.value>target.value*1.6?15:0);
+    if(!best||score<best.score)best={...pkg,target,offer,score};
+  }
+  return best;
+}
+function generateTradeSuggestions(ownerId){
+  const myRooms=rosterPositionSnapshot(ownerId),myWeak=[...myRooms].sort((a,b)=>b.rank-a.rank)[0],myStrong=[...myRooms].sort((a,b)=>a.rank-b.rank)[0];
+  const suggestions=[];
+  for(const partner of assistantManagers().filter(m=>m.ownerId!==ownerId)){
+    const rooms=rosterPositionSnapshot(partner.ownerId),partnerAtNeed=rooms.find(r=>r.pos===myWeak.pos),partnerNeedsMine=rooms.find(r=>r.pos===myStrong.pos);
+    if(!partnerAtNeed||!partnerNeedsMine)continue;
+    const complementary=(myWeak.rank-partnerAtNeed.rank)+(partnerNeedsMine.rank-myStrong.rank);
+    if(complementary<3)continue;
+    const framework=bestTradeFramework(ownerId,partner.ownerId,myStrong.pos,myWeak.pos,partnerAtNeed.pos,partnerNeedsMine.pos);if(!framework)continue;
+    suggestions.push({partner,framework,score:complementary*10-framework.gap,myWeak,myStrong,partnerAtNeed,partnerNeedsMine});
+  }
+  return suggestions.sort((a,b)=>b.score-a.score).slice(0,4);
+}
+function bestTradePartnerMatch(ownerId){
+  const mine=rosterPositionSnapshot(ownerId),leagueSize=mine[0]?.leagueSize||assistantManagers().length||1;
+  let best=null;
+  for(const partner of assistantManagers().filter(m=>m.ownerId!==ownerId)){
+    const theirs=rosterPositionSnapshot(partner.ownerId);
+    for(const giveRoom of mine){
+      const theirNeed=theirs.find(r=>r.pos===giveRoom.pos);if(!theirNeed)continue;
+      const supplyGap=theirNeed.rank-giveRoom.rank;if(supplyGap<=0)continue;
+      for(const needRoom of mine){
+        if(needRoom.pos===giveRoom.pos)continue;
+        const theirSupply=theirs.find(r=>r.pos===needRoom.pos);if(!theirSupply)continue;
+        const needGap=needRoom.rank-theirSupply.rank;if(needGap<=0)continue;
+        const framework=bestTradeFramework(ownerId,partner.ownerId,giveRoom.pos,needRoom.pos,theirSupply.pos,theirNeed.pos);if(!framework)continue;
+        const maxGap=Math.max(1,leagueSize-1),fit=Math.min(1,(supplyGap+needGap)/(2*maxGap));
+        const balance=Math.max(0,1-Math.min(framework.gap,20)/20);
+        const pickFlex=Math.min(1,(pickAssetPool(ownerId).length+pickAssetPool(partner.ownerId).length)/8);
+        const matchScore=Math.max(1,Math.min(99,Math.round(fit*45+balance*40+pickFlex*15)));
+        const candidate={partner,framework,matchScore,giveRoom,needRoom,theirNeed,theirSupply,supplyGap,needGap,fit,balance,pickFlex};
+        if(!best||candidate.matchScore>best.matchScore||(candidate.matchScore===best.matchScore&&framework.gap<best.framework.gap))best=candidate;
+      }
+    }
+  }
+  return best;
+}
+function renderBestTradePartner(ownerId){
+  const el=$('assistant-best-partner');if(!el)return;const match=bestTradePartnerMatch(ownerId),name=managerLabel(ownerId);
+  if(!match){el.innerHTML='<div class="best-partner-empty"><span>BEST TRADE PARTNER</span><strong>No obvious matchmaking edge right now</strong><p>Your roster does not currently have a strong two-way positional fit with another franchise at a reasonable market-value range.</p></div>';return;}
+  const f=match.framework,partner=match.partner.name,avg=(f.sendValue+f.receiveValue)/2||1;
+  const balanceText=f.gap<=5?'Excellent value balance':f.gap<=10?'Good value balance':'Workable value balance';
+  el.innerHTML=`<article class="best-partner-card"><div class="best-partner-score"><span>MATCH SCORE</span><strong>${match.matchScore}</strong><small>/ 100</small></div><div class="best-partner-copy"><span class="best-partner-kicker">BEST TRADE PARTNER</span><h3>${escapeHtml(partner)}</h3><p><strong>${escapeHtml(name)}</strong> is stronger at ${match.giveRoom.pos} (#${match.giveRoom.rank}) while ${escapeHtml(partner)} is weaker there (#${match.theirNeed.rank}). ${escapeHtml(partner)} is stronger at ${match.needRoom.pos} (#${match.theirSupply.rank}), your #${match.needRoom.rank} room. That creates the league's cleanest two-way roster fit right now.</p><div class="best-partner-reasons"><span>${match.giveRoom.pos} surplus ↔ ${match.needRoom.pos} need</span><span>${balanceText}</span><span>${pickAssetPool(ownerId).length+pickAssetPool(match.partner.ownerId).length} combined future picks</span></div></div><div class="best-partner-framework"><small>SAMPLE FRAMEWORK</small><div>${assetListHtml(f.send)}<b>⇄</b>${assetListHtml(f.receive)}</div><span>${escapeHtml(name)} ${gradeLetter((f.receiveValue-f.sendValue)/avg*100)} · ${escapeHtml(partner)} ${gradeLetter((f.sendValue-f.receiveValue)/avg*100)}</span></div></article>`;
+}
+function rosteredPlayerIds(){const ids=new Set();state.rosters.forEach(r=>(r.players||[]).forEach(id=>ids.add(String(id))));return ids;}
+function marketFreeAgents(){const owned=rosteredPlayerIds(),format=dynastyFormat(),out=[];for(const [id,p] of state.marketPlayers.entries()){if(owned.has(String(id)))continue;const value=Number(p?.value?.[format]||0);if(!value)continue;out.push({id:String(id),name:p.name||playerInfo(id).name,pos:p.position||playerInfo(id).meta.split(' • ')[0],team:p.team||'',value});}return out.sort((a,b)=>b.value-a.value);}
+function cutCandidatePool(ownerId){
+  const roster=currentRosterForOwner(ownerId);if(!roster)return[];const starters=new Set((roster.starters||[]).map(String)),taxi=new Set((roster.taxi||[]).map(String)),reserve=new Set((roster.reserve||[]).map(String));
+  return (roster.players||[]).map(id=>{const p=playerInfo(id);return{id:String(id),name:p.name,pos:(p.meta||'').split(' • ')[0],meta:p.meta,value:marketValueForPlayer(id)};}).filter(a=>!starters.has(a.id)&&!taxi.has(a.id)&&!reserve.has(a.id)&&a.value>=0).sort((a,b)=>a.value-b.value);
+}
+function generateFreeAgentUpgrades(ownerId){
+  const cuts=cutCandidatePool(ownerId),free=marketFreeAgents(),out=[],usedCuts=new Set();
+  for(const fa of free.slice(0,120)){
+    const cut=cuts.filter(c=>c.pos===fa.pos&&!usedCuts.has(c.id)).sort((a,b)=>a.value-b.value)[0];if(!cut)continue;
+    const gain=fa.value-cut.value;if(gain<300||fa.value<Math.max(650,cut.value*1.2))continue;
+    out.push({fa,cut,gain});usedCuts.add(cut.id);if(out.length>=5)break;
+  }
+  return out.sort((a,b)=>b.gain-a.gain);
+}
+function assetListHtml(items){return items.map(a=>`<span class="assistant-asset"><strong>${escapeHtml(a.label||a.name)}</strong><small>${Math.round(a.value||0).toLocaleString()}</small></span>`).join('');}
+function renderRosterAssistant(){
+  const ownerId=$('assistant-manager').value;if(!ownerId)return;const name=managerLabel(ownerId),rooms=rosterPositionSnapshot(ownerId),strong=[...rooms].sort((a,b)=>a.rank-b.rank)[0],weak=[...rooms].sort((a,b)=>b.rank-a.rank)[0];
+  $('assistant-team-name').textContent=name;$('assistant-strength').textContent=`${strong.pos} · #${strong.rank}`;$('assistant-weakness').textContent=`${weak.pos} · #${weak.rank}`;
+  renderBestTradePartner(ownerId);
+  const trades=generateTradeSuggestions(ownerId);$('assistant-trades').innerHTML=trades.length?trades.map((x,i)=>{const f=x.framework,avg=(f.sendValue+f.receiveValue)/2||1,edge=(f.receiveValue-f.sendValue)/avg*100;return `<article class="assistant-card"><div class="assistant-card-head"><div><span>PARTNER ${i+1}</span><strong>${escapeHtml(x.partner.name)}</strong></div><b>${Math.abs(edge)<=5?'Balanced':`${Math.abs(edge).toFixed(0)}% value gap`}</b></div><p>You are #${x.myStrong.rank} at ${x.myStrong.pos} and #${x.myWeak.rank} at ${x.myWeak.pos}. ${escapeHtml(x.partner.name)} has the complementary roster shape.</p><div class="assistant-deal"><div><small>OFFER</small>${assetListHtml(f.send)}</div><span>⇄</span><div><small>TARGET</small>${assetListHtml(f.receive)}</div></div><div class="assistant-grades"><span>${escapeHtml(name)} <b>${gradeLetter((f.receiveValue-f.sendValue)/avg*100)}</b></span><span>${escapeHtml(x.partner.name)} <b>${gradeLetter((f.sendValue-f.receiveValue)/avg*100)}</b></span></div></article>`;}).join(''):'<div class="empty-cell">No strong complementary trade match found right now. That is better than manufacturing a bad trade idea.</div>';
+  const upgrades=generateFreeAgentUpgrades(ownerId);$('assistant-free-agents').innerHTML=upgrades.length?upgrades.map(x=>`<article class="assistant-card fa-upgrade"><div class="assistant-card-head"><div><span>FREE AGENT UPGRADE</span><strong>Add ${escapeHtml(x.fa.name)}</strong></div><b>+${Math.round(x.gain).toLocaleString()}</b></div><p>${escapeHtml(x.fa.pos)}${x.fa.team?` · ${escapeHtml(x.fa.team)}`:''} is currently unrostered and carries more dynasty value than a fringe asset on this roster.</p><div class="assistant-swap"><div><small>ADD</small><strong>${escapeHtml(x.fa.name)}</strong><span>${Math.round(x.fa.value).toLocaleString()} value</span></div><div>→</div><div><small>CUT CANDIDATE</small><strong>${escapeHtml(x.cut.name)}</strong><span>${Math.round(x.cut.value).toLocaleString()} value</span></div></div></article>`).join(''):'<div class="empty-cell">No meaningful same-position free-agent upgrade clears the current threshold.</div>';
+  const cuts=cutCandidatePool(ownerId).slice(0,4);$('assistant-cuts').innerHTML=cuts.length?cuts.map((c,i)=>`<div class="cut-row"><span>${i+1}</span><div><strong>${escapeHtml(c.name)}</strong><small>${escapeHtml(c.meta||c.pos)} · bench only; starters, taxi and reserve are excluded</small></div><b>${Math.round(c.value).toLocaleString()}</b></div>`).join(''):'<div class="empty-cell">No eligible bench cut candidates found.</div>';
+}
+async function loadRosterAssistant(){
+  $('assistant-loading').classList.remove('hidden');$('assistant-content').classList.add('hidden');await Promise.all([ensureMarketData(),loadPlayerMap(),api(`/league/${CONFIG.primaryLeagueId}/traded_picks`).then(x=>{state.currentTradedPicks=Array.isArray(x)?x:[];}).catch(()=>{state.currentTradedPicks=[];})]).catch(()=>{});
+  const managers=assistantManagers(),sel=$('assistant-manager'),old=sel.value;sel.innerHTML=managers.map(m=>`<option value="${escapeHtml(m.ownerId)}">${escapeHtml(m.name)}</option>`).join('');if(old&&managers.some(m=>m.ownerId===old))sel.value=old;
+  renderRosterAssistant();$('assistant-loading').classList.add('hidden');$('assistant-content').classList.remove('hidden');
+}
+
 async function ensureArchive(){if(!state.matchupsLoaded){$('h2h-loading').classList.remove('hidden');$('franchise-loading').classList.remove('hidden');$('records-loading').classList.remove('hidden');await loadAllMatchups();$('h2h-loading').classList.add('hidden');$('records-loading').classList.add('hidden');}renderH2HSelectors();renderFranchiseHall();renderTeamRecords();renderCareerRecords();renderSeasonExplorer(Number($('explorer-season').value||0));}
 
 function activateView(name){$$('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.view===name));$$('.view').forEach(v=>v.classList.toggle('active-view',v.id===`${name}-view`));}
-async function navigate(name){activateView(name);try{if(['franchises','headtohead','records','season'].includes(name))await ensureArchive();if(name==='franchises')enhanceFranchiseMarket().catch(()=>{});if(name==='trades')await loadTrades();if(name==='tradelab')await loadTradeLab();if(name==='headtohead')renderH2H();if(name==='records')await showRecordView(state.recordView);}catch(e){showError(`Historical analytics could not finish loading: ${e.message}`);}}
+async function navigate(name){activateView(name);try{if(['franchises','headtohead','records','season'].includes(name))await ensureArchive();if(name==='franchises')enhanceFranchiseMarket().catch(()=>{});if(name==='trades')await loadTrades();if(name==='tradelab')await loadTradeLab();if(name==='assistant')await loadRosterAssistant();if(name==='headtohead')renderH2H();if(name==='records')await showRecordView(state.recordView);}catch(e){showError(`Historical analytics could not finish loading: ${e.message}`);}}
 
 async function load(){clearError();setApiState('loading','Connecting to Sleeper');$('league-meta').textContent='Loading league...';try{state.league=await api(`/league/${CONFIG.primaryLeagueId}`);[state.users,state.rosters,state.nflState]=await Promise.all([api(`/league/${CONFIG.primaryLeagueId}/users`),api(`/league/${CONFIG.primaryLeagueId}/rosters`),api('/state/nfl').catch(()=>null)]);renderCurrentLeague();await renderCurrentWeek();stampLiveUpdate();startLiveRefresh();setApiState('','Live Sleeper data');try{await loadHistory();setApiState('','Live + history ready');$('overview-legends').innerHTML='<div class="mini-award"><span>Historical Analytics</span><strong>Ready on demand</strong><small>Open H2H, Franchises or Records to load the deep archive.</small></div>';}catch(e){showError(`Current league loaded, but history could not finish: ${e.message}`);}}catch(e){showError(`Could not load Sleeper league ${CONFIG.primaryLeagueId}: ${e.message}`);}}
 
-$$('.nav-item').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.view)));$$('[data-jump]').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.jump)));$('season-select').addEventListener('change',e=>renderStandingsSeason(Number(e.target.value)));$('explorer-season').addEventListener('change',e=>renderSeasonExplorer(Number(e.target.value)));$('franchise-select').addEventListener('change',e=>renderFranchiseProfile(e.target.value));$('trade-season').addEventListener('change',loadSelectedTradeSeason);$('trade-lab-a').addEventListener('change',()=>{state.tradeLabSelections.a.clear();refreshTradeLabSides();});$('trade-lab-b').addEventListener('change',()=>{state.tradeLabSelections.b.clear();refreshTradeLabSides();});$('h2h-a').addEventListener('change',renderH2H);$('h2h-b').addEventListener('change',renderH2H);$$('.h2h-mode-tab').forEach(b=>b.addEventListener('click',()=>setH2HMode(b.dataset.h2hMode)));$('trade-partner-manager').addEventListener('change',()=>{renderTradeRelationships();hydrateSelectedTradeRelationship();});$('trade-partner-opponent').addEventListener('change',()=>{renderTradeRelationships();hydrateSelectedTradeRelationship();});$$('.record-tab').filter(b=>!b.classList.contains('h2h-mode-tab')).forEach(b=>b.addEventListener('click',()=>showRecordView(b.dataset.recordView)));$('refresh-btn').addEventListener('click',()=>location.reload());
+$$('.nav-item').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.view)));$$('[data-jump]').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.jump)));$('season-select').addEventListener('change',e=>renderStandingsSeason(Number(e.target.value)));$('explorer-season').addEventListener('change',e=>renderSeasonExplorer(Number(e.target.value)));$('franchise-select').addEventListener('change',e=>renderFranchiseProfile(e.target.value));$('trade-season').addEventListener('change',loadSelectedTradeSeason);$('trade-lab-a').addEventListener('change',()=>{state.tradeLabSelections.a.clear();refreshTradeLabSides();});$('trade-lab-b').addEventListener('change',()=>{state.tradeLabSelections.b.clear();refreshTradeLabSides();});$('assistant-manager').addEventListener('change',renderRosterAssistant);$('h2h-a').addEventListener('change',renderH2H);$('h2h-b').addEventListener('change',renderH2H);$$('.h2h-mode-tab').forEach(b=>b.addEventListener('click',()=>setH2HMode(b.dataset.h2hMode)));$('trade-partner-manager').addEventListener('change',()=>{renderTradeRelationships();hydrateSelectedTradeRelationship();});$('trade-partner-opponent').addEventListener('change',()=>{renderTradeRelationships();hydrateSelectedTradeRelationship();});$$('.record-tab').filter(b=>!b.classList.contains('h2h-mode-tab')).forEach(b=>b.addEventListener('click',()=>showRecordView(b.dataset.recordView)));$('refresh-btn').addEventListener('click',()=>location.reload());
 load();

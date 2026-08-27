@@ -87,3 +87,18 @@ The lineup metric is intentionally market-value based; it is not presented as a 
 - Player names now resolve in two layers: fast Stats Guy Fantasy metadata first, then Sleeper's full player directory cached for 24 hours for historical/retired players.
 - Historical trade grading is isolated per trade. Stats Guy's atomic batch endpoint is still used for speed, but a failed batch is recursively split and retried down to individual deals so one malformed/unpriceable transaction cannot erase grades for an entire season.
 - Trade entries with an empty mapped side are skipped by the grader instead of poisoning a batch.
+
+
+## v8.2 Roster Assistant
+- Simplified Trade Center grades to letter grades.
+- Best/worst trade outcome cards jump directly to the trade.
+- Older trades without a historical snapshot show current outcome only.
+- Added Roster Assistant with complementary trade-partner frameworks, free-agent upgrades, and protected cut-candidate suggestions.
+
+
+## v8.3.1 regression QA
+- Fixed stale v8.2 CSS/JS cache-busters in the v8.3 package.
+- Verified no duplicate function declarations or duplicate/missing DOM IDs.
+- Verified JavaScript syntax with Node.
+- Unit-regression coverage includes preseason/current-week behavior, tie suppression, trade-grade letter bands, current-only historical trade rendering, roster positional ranking, best-partner matchmaking, trade suggestions, free-agent upgrades, and cut-candidate protections.
+- Headless Chromium execution is blocked by the managed browser policy in the build environment, so browser-level live API execution remains a deployment smoke test rather than a locally automated test.
