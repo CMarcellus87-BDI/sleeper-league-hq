@@ -54,3 +54,11 @@ The lineup metric is intentionally market-value based; it is not presented as a 
 - Select any manager to rank their most frequent trading partners across linked league history.
 - Select a partner to view every bilateral trade across seasons, including resolved historical draft picks where available.
 - Historical trade relationship loading remains lazy and only runs when Trade Relationships is opened.
+
+
+## v7.4 reliability patch
+- Removes automatic full-history matchup crawl on startup.
+- Adds bounded Sleeper request queue, de-duplication, retries, and transaction caching.
+- Fixes H2H matchup table rendering.
+- Makes Trade Relationships progressive instead of blocking on all seasons.
+- Adds fallback loading for dynasty market values and cache-busted JS/CSS assets.
