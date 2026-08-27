@@ -23,6 +23,7 @@
         <button class="nav-item" data-view="history"><span class="nav-icon">♛</span><span>History</span></button>
         <button class="nav-item" data-view="franchises"><span class="nav-icon">★</span><span>Legends</span></button>
         <button class="nav-item" data-view="trades"><span class="nav-icon">⇄</span><span>Trades</span></button>
+        <button class="nav-item" data-view="tradelab"><span class="nav-icon">⚖</span><span>Trade Lab</span></button>
         <button class="nav-item" data-view="headtohead"><span class="nav-icon">⚔</span><span>H2H</span></button>
         <button class="nav-item" data-view="records"><span class="nav-icon">↗</span><span>Records</span></button>
         <button class="nav-item" data-view="season"><span class="nav-icon">◫</span><span>Seasons</span></button>
@@ -42,7 +43,7 @@
         <div class="live-card">
           <div class="live-top"><span class="status-dot tiny"></span><strong>LIVE SLEEPER DATA</strong></div>
           <small>League 1326583431680761856</small>
-          <button id="refresh-btn" type="button">Refresh archive ↻</button>
+          <small id="live-updated" class="live-updated">Matchups update on load</small><button id="refresh-btn" type="button">Refresh archive ↻</button>
         </div>
       </header>
 
@@ -60,7 +61,7 @@
         <div class="overview-grid">
           <article class="panel">
             <div class="panel-head"><div><p class="eyebrow">CURRENT TABLE</p><h2>Standings</h2></div><button class="text-button" type="button" data-jump="standings">View full table →</button></div>
-            <div class="table-wrap overview-table"><table><thead><tr><th>#</th><th>Team</th><th>W-L-T</th><th>PF</th><th>PA</th></tr></thead><tbody id="overview-standings"></tbody></table></div>
+            <div class="table-wrap overview-table"><table><thead><tr><th>#</th><th>Team</th><th>W-L</th><th>PF</th><th>PA</th></tr></thead><tbody id="overview-standings"></tbody></table></div>
           </article>
           <article class="panel">
             <div class="panel-head"><div><p class="eyebrow">DYNASTY ARCHIVE</p><h2>Championship Ledger</h2></div><button class="text-button" type="button" data-jump="history">Hall of champions →</button></div>
@@ -125,7 +126,7 @@
           </div>
           <article class="panel">
             <div class="panel-head"><div><p class="eyebrow">ALL-TIME TABLE</p><h2>Franchise Hall</h2></div></div>
-            <div class="table-wrap franchise-table"><table class="dense-table"><thead><tr><th>#</th><th>Manager</th><th>Seasons</th><th>Titles</th><th>Playoffs</th><th>W-L-T</th><th>Win%</th><th>PF</th><th>DOL</th></tr></thead><tbody id="franchise-table"></tbody></table></div>
+            <div class="table-wrap franchise-table"><table class="dense-table"><thead><tr><th>#</th><th>Manager</th><th>Seasons</th><th>Titles</th><th>Playoffs</th><th>W-L</th><th>Win%</th><th>PF</th><th>DOL</th></tr></thead><tbody id="franchise-table"></tbody></table></div>
           </article>
         </div>
       </section>
@@ -141,13 +142,34 @@
             <article class="stat-card"><span>Biggest Deal</span><strong id="trade-biggest">—</strong><small>assets moved</small></article>
             <article class="stat-card"><span>Draft Picks Moved</span><strong id="trade-picks">—</strong><small>future + historical</small></article>
           </div>
+          <div id="trade-analytics-loading" class="inline-status hidden"><span class="spinner"></span>Grading trades against dynasty market values…</div>
+          <div id="trade-awards" class="trade-awards hidden"></div>
+          <div class="market-credit">Market values by <a href="https://statsguyfantasy.com" target="_blank" rel="noopener">Stats Guy Fantasy</a> • trade-derived dynasty values • historical coverage begins Sep. 1, 2025</div>
           <div id="trade-list" class="trade-list"></div>
         </div>
       </section>
 
+
+      <section id="tradelab-view" class="view">
+        <div class="section-banner"><div><p class="eyebrow gold">CURRENT ROSTERS + REAL ASSETS</p><h2>Trade Lab</h2><p>Build a deal from the league's actual rosters and draft capital. Values are context, not a verdict.</p></div><span class="banner-star">⚖</span></div>
+        <div id="tradelab-loading" class="inline-status"><span class="spinner"></span>Loading current dynasty market…</div>
+        <div id="tradelab-content" class="hidden">
+          <div class="trade-lab-selectors">
+            <label>Franchise A<select id="trade-lab-a"></select></label><div class="versus-badge">⇄</div><label>Franchise B<select id="trade-lab-b"></select></label>
+          </div>
+          <div class="trade-lab-grid">
+            <article class="panel"><div class="panel-head"><div><p class="eyebrow">SIDE A</p><h2 id="trade-lab-a-name">Franchise A</h2></div><strong id="trade-lab-a-total" class="market-total">0</strong></div><div id="trade-lab-a-assets" class="asset-picker"></div></article>
+            <article class="panel trade-verdict-panel"><p class="eyebrow">MARKET CHECK</p><div id="trade-lab-verdict" class="trade-verdict">Select assets on both sides.</div><div class="market-credit">Values by <a href="https://statsguyfantasy.com" target="_blank" rel="noopener">Stats Guy Fantasy</a></div></article>
+            <article class="panel"><div class="panel-head"><div><p class="eyebrow">SIDE B</p><h2 id="trade-lab-b-name">Franchise B</h2></div><strong id="trade-lab-b-total" class="market-total">0</strong></div><div id="trade-lab-b-assets" class="asset-picker"></div></article>
+          </div>
+          <article class="panel trade-context-panel" id="trade-lab-context"><div class="context-empty">Build a deal to see lineup, positional depth, and draft-capital impact.</div></article>
+        </div>
+      </section>
       <section id="headtohead-view" class="view">
-        <div class="section-banner"><div><p class="eyebrow gold">THE GRUDGE MATCH MACHINE</p><h2>Head to Head</h2><p>Settle arguments with the complete matchup archive.</p></div><span class="banner-swords">⚔</span></div>
+        <div class="section-banner"><div><p class="eyebrow gold">THE GRUDGE MATCH MACHINE</p><h2>Head to Head</h2><p>Settle matchup arguments — or audit who keeps trading with whom.</p></div><span class="banner-swords">⚔</span></div>
+        <div class="records-toolbar h2h-mode-toolbar"><div class="record-tabs"><button class="h2h-mode-tab record-tab active" type="button" data-h2h-mode="matchups">Matchups</button><button class="h2h-mode-tab record-tab" type="button" data-h2h-mode="trades">Trade Relationships</button></div><span id="h2h-mode-status" class="pill">Matchup archive</span></div>
         <div id="h2h-loading" class="inline-status hidden"><span class="spinner"></span>Loading historical matchups…</div>
+        <div id="h2h-matchups-mode">
         <div class="matchup-selectors">
           <label>Manager A<select id="h2h-a"></select></label><div class="versus-badge">VS</div><label>Manager B<select id="h2h-b"></select></label>
         </div>
@@ -159,6 +181,16 @@
         <div class="h2h-details">
           <article class="panel"><div class="panel-head"><div><p class="eyebrow">SERIES NOTES</p><h2>Tale of the Tape</h2></div></div><div id="h2h-notes" class="record-grid"></div></article>
           <article class="panel"><div class="panel-head"><div><p class="eyebrow">GAME LOG</p><h2>Every Meeting</h2></div></div><div class="table-wrap h2h-table"><table><thead><tr><th>Season</th><th>Week</th><th>Winner</th><th>Score</th><th>Loser</th><th>Score</th><th>Margin</th></tr></thead><tbody id="h2h-results"></tbody></table></div></article>
+        </div>
+        </div>
+        <div id="h2h-trades-mode" class="hidden">
+          <div id="trade-partners-loading" class="inline-status hidden"><span class="spinner"></span>Reconstructing trading relationships across league history…</div>
+          <div class="matchup-selectors trade-partner-selectors"><label>Manager<select id="trade-partner-manager"></select></label><div class="versus-badge">⇄</div><label>Partner<select id="trade-partner-opponent"><option value="">Most frequent partner</option></select></label></div>
+          <div id="trade-partner-summary" class="stat-grid trade-partner-stats"></div>
+          <div class="h2h-details trade-partner-details">
+            <article class="panel"><div class="panel-head"><div><p class="eyebrow">TRADING PARTNERS</p><h2>Who Deals With Them Most?</h2></div></div><div id="trade-partner-ranking" class="rank-list"></div></article>
+            <article class="panel"><div class="panel-head"><div><p class="eyebrow">DEAL TAPE</p><h2 id="trade-partner-history-title">Trade History</h2></div></div><div id="trade-partner-history" class="trade-list compact-trades"></div></article>
+          </div>
         </div>
       </section>
 

@@ -1,58 +1,56 @@
-# Sleeper League HQ
+# Dynasty of Legends v7.0
 
-A lightweight fantasy-football command center powered by Sleeper's public read-only API.
+A mobile-friendly Sleeper dynasty league archive and trade analytics dashboard for league `1326583431680761856`.
 
-## Current prototype
+## What's new in v7
 
-- Live league metadata
-- Live standings from rosters/users
-- League leaders and points leaders
-- Preseason-safe home matchup view: defaults to regular-season Week 1 until the NFL regular season begins
-- Dynasty history traversal through `previous_league_id`
-- Season selector
-- Franchise profiles and career leaderboard
-- League record book and head-to-head archive
-- Trade Center with historical draft-pick resolution (`2024 1.04 → Player`) when Sleeper draft history supports the mapping
-- W-L records intentionally ignore Sleeper tie counters for this league
-- GitHub Pages-friendly: no backend and no build step
+- Current roster + draft-capital module inside Franchise Profiles
+- Live dynasty market values using Stats Guy Fantasy's public API (Sleeper IDs are used directly)
+- Trade Lab that builds deals from the league's real current rosters and mapped future picks
+- Historical trade grading:
+  - **THEN** uses the nearest historical market snapshot when available
+  - **NOW** replaces resolved draft picks with the actual player drafted and values the resulting assets today
+- Trade Hall of Fame / Hall of Shame cards (best outcome, worst outcome, best gamble, good process / bad result)
+- On-demand asset lineage for resolved picks so mobile users don't load the full transaction archive unless they ask for it
+- Season-by-season trade loading remains the default for performance
 
-The prototype is currently configured for league ID `1326583431680761856`.
+## Value-source notes
+
+Market values are supplied by Stats Guy Fantasy (`https://api.statsguyfantasy.com/api/v1`). The app displays visible source credit as required by their public API terms. Historical snapshots currently begin on 2025-09-01, so older Sleeper trades can receive a current/outcome grade but may not have an at-the-time market grade.
 
 ## Run locally
 
-Do not double-click `index.html`; serve the directory over HTTP so browser API requests behave consistently.
+Because browsers can restrict remote API requests from `file://`, serve the folder over HTTP:
 
 ```bash
-python -m http.server 8080
+python3 -m http.server 8000
 ```
 
-Then open `http://localhost:8080`.
+Then open `http://localhost:8000`.
 
-## Deploy with GitHub Pages
+## Data sources
 
-1. Create a repository and add these files at the repository root.
-2. In GitHub: Settings → Pages.
-3. Choose **Deploy from a branch**, `main`, `/ (root)`.
+- Sleeper public API: league, users, rosters, history, matchups, brackets, transactions, drafts and traded picks
+- Stats Guy Fantasy API: dynasty player values, rookie-pick values and historical trade-value snapshots
 
-## Next phase: BDI Fantasy HQ
+## v7.1 Trade Lab context
 
-Add a second league ID to configuration and merge both datasets into:
+Trade Lab now evaluates more than raw market balance. For each proposed deal it simulates the post-trade rosters and reports:
 
-- Conference A / Conference B standings
-- Combined 20-team power rankings
-- Weekly awards
-- Points-for playoff cut line (top 3 per conference)
-- Weeks 15–17 custom 6 → 4 → 2 championship series
-- All-time league records and head-to-head history
+- best legal starting-lineup market-value change based on the league roster slots
+- QB/RB/WR/TE room value and league-rank movement
+- future draft-capital value change
+- future pick-count change
+- a short contextual read such as contender move, future-focused move, or balanced roster move
 
-## Sleeper API
+The lineup metric is intentionally market-value based; it is not presented as a weekly fantasy-points projection.
 
-This app uses `https://api.sleeper.app/v1`. Sleeper's public API is read-only and does not require an API token.
+## v7.2 additions
 
-
-## v6.2 performance update
-- Trade Center now loads one season at a time instead of crawling the full dynasty archive.
-- Current season is selected by default.
-- Previously loaded seasons are cached in-memory for instant switching.
-- Draft-pick resolution only loads draft seasons actually referenced by the selected season's trades.
-- All Seasons remains available as an explicit slower opt-in.
+- Live matchup refresh: current Sleeper matchup scores refresh every 60 seconds while the page is visible.
+- Live week tracking: the refresh also re-reads Sleeper NFL state, so Home advances with the NFL week automatically; preseason remains pinned to Week 1.
+- Last-updated indicator in the live data card.
+- Head to Head now includes a Trade Relationships mode.
+- Select any manager to rank their most frequent trading partners across linked league history.
+- Select a partner to view every bilateral trade across seasons, including resolved historical draft picks where available.
+- Historical trade relationship loading remains lazy and only runs when Trade Relationships is opened.
