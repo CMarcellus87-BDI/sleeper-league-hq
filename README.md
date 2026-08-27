@@ -45,7 +45,7 @@ Trade Lab now evaluates more than raw market balance. For each proposed deal it 
 
 The lineup metric is intentionally market-value based; it is not presented as a weekly fantasy-points projection.
 
-## v7.2 additions
+## v7.3 additions
 
 - Live matchup refresh: current Sleeper matchup scores refresh every 60 seconds while the page is visible.
 - Live week tracking: the refresh also re-reads Sleeper NFL state, so Home advances with the NFL week automatically; preseason remains pinned to Week 1.
