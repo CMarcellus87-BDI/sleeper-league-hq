@@ -4,7 +4,7 @@ const CONFIG = {
   maxHistorySeasons: 20,
   maxWeeksPerSeason: 18,
   matchupConcurrency: 4,
-  version: '7.4.0',
+  version: '8.0.0-phase1',
   valueApiBase: 'https://api.statsguyfantasy.com/api/v1'
 };
 
@@ -18,6 +18,7 @@ const state = {
   matchupsPromise: null,
   playerMap: null,
   playerMapPromise: null,
+  playerMapFull: false,
   archive: null,
   recordView: 'team',
   tradesLoaded: false,
@@ -272,8 +273,39 @@ function renderCareerRecords(){
   $('career-record-cards').innerHTML=categories.map(([label,f,key,icon])=>{let value='—';if(f){value=key==='winPct'?pct(f[key]):key==='pf'?f[key].toFixed(1):key==='goat'?f[key].toFixed(1):String(f[key]);}return `<article class="showcase-card"><span class="showcase-icon">${icon}</span><small>${label}</small><strong>${value}</strong><p>${escapeHtml(f?.name||'—')}</p></article>`;}).join('');
 }
 
-async function loadPlayerMap(){if(state.playerMap)return state.playerMap;if(state.playerMapPromise)return state.playerMapPromise;$('player-db-note').textContent='Loading Sleeper player directory...';state.playerMapPromise=api('/players/nfl').then(data=>{state.playerMap=data||{};$('player-db-note').textContent='Player names resolved from Sleeper.';return state.playerMap;}).catch(()=>{state.playerMap={};$('player-db-note').textContent='Player directory unavailable; Sleeper player IDs are shown instead.';return state.playerMap;});return state.playerMapPromise;}
-function playerInfo(id){const p=state.playerMap?.[id];if(!p)return{name:`Player ${id}`,meta:''};return{name:p.full_name||[p.first_name,p.last_name].filter(Boolean).join(' ')||`Player ${id}`,meta:[p.position,p.team].filter(Boolean).join(' • ')}};
+function mergePlayerCards(cards={}){
+  state.playerMap=state.playerMap||{};
+  Object.entries(cards||{}).forEach(([id,p])=>{if(!p)return;state.playerMap[String(id)]={...(state.playerMap[String(id)]||{}),...p};});
+}
+function mergeMarketPlayerNames(players=[]){
+  state.playerMap=state.playerMap||{};
+  (players||[]).forEach(p=>{if(!p?.id)return;const id=String(p.id),existing=state.playerMap[id]||{};state.playerMap[id]={...existing,player_id:id,full_name:existing.full_name||p.name||'',first_name:existing.first_name||'',last_name:existing.last_name||'',position:existing.position||p.position||'',team:existing.team||p.team||''};});
+}
+async function loadPlayerMap(){
+  if(state.playerMapFull&&state.playerMap)return state.playerMap;
+  if(state.playerMapPromise)return state.playerMapPromise;
+  state.playerMapPromise=(async()=>{
+    const note=$('player-db-note');if(note)note.textContent='Resolving player names…';
+    const cached=cacheGet('dol-player-directory-v2',24*60*60*1000);
+    if(cached&&typeof cached==='object'){mergePlayerCards(cached);state.playerMapFull=true;if(note)note.textContent='Player names loaded from daily cache.';return state.playerMap;}
+    // Fast first layer: Stats Guy returns Sleeper IDs plus current player metadata.
+    try{
+      const market=await valueApi('/players');
+      if(market?.players?.length){mergeMarketPlayerNames(market.players);market.players.forEach(x=>state.marketPlayers.set(String(x.id),x));}
+    }catch{}
+    if(note)note.textContent='Loading full Sleeper player directory for historical names…';
+    try{
+      const full=await api('/players/nfl');
+      mergePlayerCards(full||{});state.playerMapFull=true;cacheSet('dol-player-directory-v2',state.playerMap);
+      if(note)note.textContent='Player names resolved from Sleeper.';
+    }catch{
+      if(note)note.textContent=Object.keys(state.playerMap||{}).length?'Current player names loaded; some retired players may still show IDs.':'Player directory unavailable; Sleeper player IDs are shown instead.';
+    }
+    return state.playerMap||{};
+  })().finally(()=>state.playerMapPromise=null);
+  return state.playerMapPromise;
+}
+function playerInfo(id){const key=String(id),p=state.playerMap?.[key],m=state.marketPlayers.get(key);if(!p&&!m)return{name:`Player ${key}`,meta:''};return{name:p?.full_name||[p?.first_name,p?.last_name].filter(Boolean).join(' ')||m?.name||`Player ${key}`,meta:[p?.position||m?.position,p?.team||m?.team].filter(Boolean).join(' • ')}};
 function renderPlayerRecords(){const games=[...(state.archive?.playerGames||[])].filter(g=>g.points>0).sort((a,b)=>b.points-a.points).slice(0,50);$('player-records').innerHTML=games.length?games.map((g,i)=>{const p=playerInfo(g.playerId);return`<tr><td class="rank big-rank">${i+1}</td><td class="team-cell"><strong>${escapeHtml(p.name)}</strong><span>${escapeHtml(p.meta)}</span></td><td class="gold-score">${g.points.toFixed(2)}</td><td>${g.season}</td><td>${g.week}</td><td>${escapeHtml(g.manager)}</td></tr>`;}).join(''):'<tr><td colspan="6" class="empty-cell">No player scoring data found in the matchup archive.</td></tr>';}
 
 async function showRecordView(view){state.recordView=view;$$('.record-tab').forEach(b=>b.classList.toggle('active',b.dataset.recordView===view));$$('.record-panel').forEach(p=>p.classList.add('hidden'));$(`${view}-records-panel`).classList.remove('hidden');if(view==='player'){ $('records-loading').classList.remove('hidden');$('records-status').textContent='Loading players';await loadPlayerMap();renderPlayerRecords();$('records-loading').classList.add('hidden');$('records-status').textContent='Archive loaded';}}
@@ -419,6 +451,7 @@ async function ensureMarketData(){
       }
       const picks=await valueApi('/picks').catch(()=>({picks:[]}));
       (players.players||[]).forEach(x=>state.marketPlayers.set(String(x.id),x));
+      mergeMarketPlayerNames(players.players||[]);
       (picks.picks||[]).forEach(x=>state.marketPicks.set(String(x.id),x));
       state.marketLoaded=state.marketPlayers.size>0||state.marketPicks.size>0;
       state.marketError=state.marketLoaded?null:'Market values unavailable right now';
@@ -452,15 +485,24 @@ function sideReceivedIds(t,rid,mode='then'){
 }
 function chunks(arr,n){const out=[];for(let i=0;i<arr.length;i+=n)out.push(arr.slice(i,i+n));return out;}
 async function batchEvaluate(entries){
-  const out=[];
-  for(const group of chunks(entries,25)){
-    if(!group.length)continue;
+  const valid=(entries||[]).filter(x=>x?.body?.sideA?.length&&x?.body?.sideB?.length);
+  const evaluateGroup=async group=>{
+    if(!group.length)return[];
     try{
       const data=await valueApi('/trades/evaluate/batch',{method:'POST',body:JSON.stringify({trades:group.map(x=>x.body)})});
-      (data.results||[]).forEach((r,i)=>out.push({key:group[i].key,result:r}));
-    }catch(e){console.warn('Trade grade batch failed',e);}
-  }
-  return out;
+      return (data.results||[]).map((r,i)=>({key:group[i].key,result:r}));
+    }catch(e){
+      // Batch validation is atomic. Split failures so one odd historical deal does not erase a whole season.
+      if(group.length===1){
+        try{const result=await valueApi('/trades/evaluate',{method:'POST',body:JSON.stringify(group[0].body)});return[{key:group[0].key,result}];}
+        catch(singleErr){console.warn('Trade grade unavailable for',group[0].key,singleErr);return[];}
+      }
+      const mid=Math.ceil(group.length/2);
+      const [left,right]=await Promise.all([evaluateGroup(group.slice(0,mid)),evaluateGroup(group.slice(mid))]);
+      return [...left,...right];
+    }
+  };
+  const out=[];for(const group of chunks(valid,25))out.push(...await evaluateGroup(group));return out;
 }
 function normalizeGrade(t, thenResult, nowResult){
   const ids=t.roster_ids||[];if(ids.length!==2)return null;
@@ -565,7 +607,7 @@ function renderTradeLab(){
   refreshTradeLabSides();
   $('tradelab-loading').classList.add('hidden');$('tradelab-content').classList.remove('hidden');
 }
-function refreshTradeLabSides(){const a=$('trade-lab-a').value,b=$('trade-lab-b').value,ma=tradeLabManagers().find(x=>x.ownerId===a),mb=tradeLabManagers().find(x=>x.ownerId===b);$('trade-lab-a-name').textContent=ma?.name||'Franchise A';$('trade-lab-b-name').textContent=mb?.name||'Franchise B';renderAssetPicker('a',a);renderAssetPicker('b',b);renderTradeLabTotals();}
+function refreshTradeLabSides(){const aSel=$('trade-lab-a'),bSel=$('trade-lab-b');let a=aSel.value,b=bSel.value;const managers=tradeLabManagers();if(a&&b&&a===b){const alt=managers.find(x=>x.ownerId!==a);if(alt){b=alt.ownerId;bSel.value=b;state.tradeLabSelections.b.clear();}}const ma=managers.find(x=>x.ownerId===a),mb=managers.find(x=>x.ownerId===b);$('trade-lab-a-name').textContent=ma?.name||'Franchise A';$('trade-lab-b-name').textContent=mb?.name||'Franchise B';renderAssetPicker('a',a);renderAssetPicker('b',b);renderTradeLabTotals();}
 function setTradeLabMarketStatus(text){const node=$('tradelab-loading');if(!node)return;node.innerHTML=text;node.classList.remove('hidden');}
 async function loadTradeLab(){
   // Render immediately from Sleeper roster IDs; hydrate names, picks and values independently.

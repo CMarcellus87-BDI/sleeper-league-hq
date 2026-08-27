@@ -1,3 +1,23 @@
+# Dynasty of Legends — Phase 1
+
+Phase 1 baseline build.
+
+## QA status
+
+- JavaScript syntax validated.
+- DOM ID references checked against the HTML.
+- Duplicate function-definition sweep completed.
+- Mobile responsive breakpoints reviewed.
+- Week 1 preseason pin + automatic regular-season week advancement retained.
+- W-L displays intentionally exclude Sleeper tie counters.
+- Pre-2025-09-01 trades do not receive fabricated THEN grades.
+- Player names use cached Sleeper directory + market metadata fallback.
+- Trade relationships remain lazy-loaded.
+- Trade Lab renders before valuation hydration and prevents same-franchise trades.
+- Live current-week matchup refresh remains 60 seconds while the page is visible.
+
+Footer marker: `PHASE 1 · BUILD v8.0.0`.
+
 # Dynasty of Legends v7.0
 
 A mobile-friendly Sleeper dynasty league archive and trade analytics dashboard for league `1326583431680761856`.
@@ -62,3 +82,8 @@ The lineup metric is intentionally market-value based; it is not presented as a 
 - Fixes H2H matchup table rendering.
 - Makes Trade Relationships progressive instead of blocking on all seasons.
 - Adds fallback loading for dynasty market values and cache-busted JS/CSS assets.
+
+## v7.5.0 reliability patch
+- Player names now resolve in two layers: fast Stats Guy Fantasy metadata first, then Sleeper's full player directory cached for 24 hours for historical/retired players.
+- Historical trade grading is isolated per trade. Stats Guy's atomic batch endpoint is still used for speed, but a failed batch is recursively split and retried down to individual deals so one malformed/unpriceable transaction cannot erase grades for an entire season.
+- Trade entries with an empty mapped side are skipped by the grader instead of poisoning a batch.
