@@ -59,6 +59,21 @@ export function buildNameIndex(playerMap = {}) {
  * the position differs (FantasyPros and Sleeper disagree on some hybrid roles)
  * but only when that name is unique across the whole map.
  */
+/**
+ * FantasyPros uses different field names on different endpoints: the rankings
+ * endpoint returns `player_name` / `player_position_id`, the projections
+ * endpoint returns `name` / `position_id`. Normalise both here so callers never
+ * have to care which one they are holding.
+ */
+export function normalizeRow(row = {}) {
+  return {
+    name: row.player_name || row.name || '',
+    position: String(row.player_position_id || row.position_id || row.position || '').toUpperCase(),
+    team: row.player_team_id || row.team_id || row.team || '',
+    id: row.player_id ?? row.fpid ?? null
+  };
+}
+
 export function matchRankings(rows = [], nameIndex = new Map()) {
   const nameOnly = new Map();
   const nameOnlyCollisions = new Set();
@@ -72,8 +87,7 @@ export function matchRankings(rows = [], nameIndex = new Map()) {
   const matched = new Map();
   const unmatched = [];
   for (const row of rows) {
-    const name = row?.player_name || row?.name;
-    const position = row?.player_position_id || row?.position;
+    const { name, position, team } = normalizeRow(row);
     if (!name) continue;
     const exact = nameIndex.get(matchKey(name, position));
     const id = exact || nameOnly.get(normalizeName(name));
@@ -81,8 +95,8 @@ export function matchRankings(rows = [], nameIndex = new Map()) {
     matched.set(id, {
       sleeperId: id,
       name,
-      position: String(position || '').toUpperCase(),
-      team: row.player_team_id || row.team || '',
+      position,
+      team,
       ecr: Number(row.rank_ecr ?? row.ecr ?? row.rank) || null,
       positionRank: parsePositionRank(row.pos_rank ?? row.position_rank),
       tier: Number(row.tier) || null,
@@ -171,8 +185,12 @@ export function coverageSummary(payload = {}) {
     returned = (payload.players || []).length;
     total = Number(payload.count) || returned;
   }
+  // The premium tier still returns public_api_limited: true while serving the
+  // full board, so the flag alone cannot be trusted. Treat a response as
+  // limited only when it actually came back short of what it says exists.
+  const short = total > 0 && returned > 0 && returned < total * 0.5;
   return {
-    limited: payload.public_api_limited === true,
+    limited: payload.public_api_limited === true && short,
     tier: payload.tier || null,
     positions,
     returned,
@@ -200,50 +218,63 @@ export function arbitrageThresholds(coverage = {}) {
  * say plainly when no recognised field was found instead of silently
  * projecting every player at zero.
  */
-export const PROJECTION_FIELDS = [
-  'fpts', 'projected_points', 'proj_pts', 'points',
-  'fantasy_points', 'projection', 'stats_fpts'
-];
+/**
+ * The projections endpoint nests everything under `stats` and carries all three
+ * scoring variants side by side. It also echoes back `scoring: "STD"` no matter
+ * what was requested, so the scoring choice has to be made here by picking the
+ * right sub-field rather than trusting the query parameter.
+ */
+export function projectionPointsField(scoring = 'PPR') {
+  const key = String(scoring).toUpperCase();
+  if (key === 'PPR') return 'points_ppr';
+  if (key === 'HALF') return 'points_half';
+  return 'points';
+}
 
-export function extractProjectedPoints(row = {}) {
-  for (const field of PROJECTION_FIELDS) {
-    const direct = Number(row?.[field]);
-    if (Number.isFinite(direct) && direct !== 0) return { points: direct, sourceField: field };
-    const nested = Number(row?.stats?.[field]);
-    if (Number.isFinite(nested) && nested !== 0) return { points: nested, sourceField: `stats.${field}` };
+export function extractProjectedPoints(row = {}, scoring = 'PPR') {
+  const stats = row?.stats || row;
+  const preferred = projectionPointsField(scoring);
+  // Preferred variant first, then the other variants, then legacy flat fields.
+  const candidates = [preferred, 'points_ppr', 'points_half', 'points', 'fpts', 'projected_points'];
+  for (const field of candidates) {
+    const value = Number(stats?.[field]);
+    if (Number.isFinite(value)) {
+      return { points: value, sourceField: stats === row ? field : `stats.${field}`, exact: field === preferred };
+    }
   }
-  for (const field of PROJECTION_FIELDS) {
-    if (row?.[field] === 0) return { points: 0, sourceField: field };
-    if (row?.stats?.[field] === 0) return { points: 0, sourceField: `stats.${field}` };
-  }
-  return { points: null, sourceField: null };
+  return { points: null, sourceField: null, exact: false };
 }
 
 /** Match a projections payload onto Sleeper ids using the same name index as ECR. */
-export function matchProjections(rows = [], nameIndex = new Map()) {
+export function matchProjections(rows = [], nameIndex = new Map(), scoring = 'PPR') {
   const { matched } = matchRankings(rows, nameIndex);
+  const bySleeperId = new Map();
+  for (const [id, row] of matched) bySleeperId.set(`${normalizeName(row.name)}|${row.position}`, id);
+
   const projections = new Map();
   const fields = new Set();
   let missing = 0;
+  let inexactScoring = 0;
+
   for (const row of rows) {
-    const name = row?.player_name || row?.name;
-    const position = row?.player_position_id || row?.position;
+    const { name, position, team } = normalizeRow(row);
     if (!name) continue;
-    const id = [...matched.values()].find(m => m.name === name && (!position || m.position === String(position).toUpperCase()))?.sleeperId;
+    const id = bySleeperId.get(`${normalizeName(name)}|${position}`);
     if (!id) continue;
-    const { points, sourceField } = extractProjectedPoints(row);
+    const { points, sourceField, exact } = extractProjectedPoints(row, scoring);
     if (points == null) { missing += 1; continue; }
     if (sourceField) fields.add(sourceField);
+    if (!exact) inexactScoring += 1;
     projections.set(id, {
       sleeperId: id,
       name,
-      position: String(position || '').toUpperCase(),
-      team: row.player_team_id || row.team || '',
+      position,
+      team,
       points,
       injury: row.player_injury_status || row.injury_status || null
     });
   }
-  return { projections, fields: [...fields], missing, matchedCount: matched.size };
+  return { projections, fields: [...fields], missing, inexactScoring, matchedCount: matched.size };
 }
 
 /**

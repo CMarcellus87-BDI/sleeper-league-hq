@@ -1,5 +1,31 @@
 # Changelog
 
+## v8.9.1 — corrected against the live FantasyPros schema
+
+Written after inspecting real premium-tier responses rather than guessing.
+
+### Fixed
+- **Projections use a different schema from rankings.** The projections endpoint
+  returns `name` / `position_id` / `team_id` where rankings return
+  `player_name` / `player_position_id` / `player_team_id`. Both now normalise
+  through one function.
+- **Scoring was being taken from the wrong field.** The endpoint echoes back
+  `scoring: "STD"` regardless of what was requested and carries all three
+  variants side by side under `stats`. Reading `stats.points` gave Jahmyr Gibbs
+  17.47 in a PPR league instead of his actual 21.40. The scoring variant is now
+  selected by field (`points_ppr`, `points_half`, `points`) from the league's
+  own scoring settings, and any player forced onto a fallback variant is
+  counted and reported in the UI.
+- **`public_api_limited` is true even on premium.** The flag alone would have
+  triggered an unnecessary per-position fan-out on a full board. A response is
+  now treated as capped only when it actually comes back short of the count it
+  reports.
+- Projections are fetched per position, since that endpoint is positional.
+
+### Notes
+- Five more tests, written against the real payload shape rather than a guessed
+  one, including the PPR-versus-standard case above. Suite is now 88.
+
 ## v8.9.0 — projections and full rankings (MVP tier)
 
 ### Added

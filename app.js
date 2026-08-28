@@ -19,7 +19,7 @@ import {
   surplusValue,
   rosterCrunchCost,
   realizedSettledShare
-} from './analytics.js?v=8.9.0';
+} from './analytics.js?v=8.9.1';
 import {
   optimalLineup,
   weekEfficiency,
@@ -27,7 +27,7 @@ import {
   luckIndex,
   scheduleSwap,
   coachingRecord
-} from './efficiency.js?v=8.9.0';
+} from './efficiency.js?v=8.9.1';
 import {
   buildNameIndex,
   matchRankings,
@@ -37,7 +37,7 @@ import {
   arbitrageThresholds,
   matchProjections,
   startSitAdvice
-} from './fantasypros.js?v=8.9.0';
+} from './fantasypros.js?v=8.9.1';
 
 const CONFIG = {
   primaryLeagueId: new URLSearchParams(location.search).get('league') || '1326583431680761856',
@@ -45,7 +45,7 @@ const CONFIG = {
   maxHistorySeasons: 20,
   maxWeeksPerSeason: 18,
   matchupConcurrency: 4,
-  version: '8.9.0-projections',
+  version: '8.9.1-projections',
   valueApiBase: 'https://api.statsguyfantasy.com/api/v1',
   // Deployed proxy that holds the FantasyPros key. Empty disables ECR features.
   // See worker/fantasypros-proxy.js for the Cloudflare Worker, or api/ for Vercel.
@@ -1562,18 +1562,19 @@ async function ensureProjections(){
     if(!week||state.nflState?.season_type==='pre'){state.projectionsError='Projections start in week 1.';return null;}
     const base=CONFIG.proxyBase.replace(/\/$/,'');
     const season=String(state.league?.season||new Date().getFullYear());
-    const url=`${base}?endpoint=projections&season=${season}&week=${week}&position=ALL&scoring=${encodeURIComponent(ecrScoring())}&limit=600`;
+    const url=`${base}?endpoint=projections&season=${season}&week=${week}&positions=QB,RB,WR,TE&scoring=${encodeURIComponent(ecrScoring())}`;
     const response=await fetch(url,{headers:{Accept:'application/json'}});
     if(!response.ok)throw new Error(`proxy returned HTTP ${response.status}`);
     const payload=await response.json();
     const rows=payload.players||payload.projections||[];
     if(!Array.isArray(rows)||!rows.length)throw new Error('no projections returned');
-    const {projections,fields,missing}=matchProjections(rows,buildNameIndex(state.playerMap||{}));
+    const {projections,fields,missing,inexactScoring}=matchProjections(rows,buildNameIndex(state.playerMap||{}),ecrScoring());
     if(!projections.size){
-      throw new Error(`none of the ${rows.length} rows had a recognised points field. Check PROJECTION_FIELDS in fantasypros.js against the payload.`);
+      throw new Error(`none of the ${rows.length} rows had a recognised points field. Check extractProjectedPoints in fantasypros.js against the payload.`);
     }
     state.projectionFields=fields;
     state.projectionsMissing=missing;
+    state.projectionsInexact=inexactScoring;
     state.projections=projections;
     state.projectionsError=null;
     return projections;
@@ -1600,7 +1601,7 @@ function renderStartSit(){
   const unprojected=players.filter(p=>!state.projections.has(p.id)).length;
   const row=(p,kind)=>`<div class="startsit-row"><span class="startsit-tag startsit-${kind}">${kind==='start'?'START':'SIT'}</span><div><strong>${escapeHtml(p.name)}</strong><small>${escapeHtml(p.position||p.pos||'')}${p.injury?` · <em class="injury">${escapeHtml(p.injury)}</em>`:''}</small></div><b>${p.points.toFixed(1)}</b></div>`;
   wrap.innerHTML=`<article class="panel"><div class="panel-head"><div><p class="eyebrow">THIS WEEK</p><h2>Start / Sit · Week ${week}</h2></div><strong class="market-total">${advice.delta>0?`+${advice.delta.toFixed(1)}`:'Optimal'}</strong></div>
-    <p class="assistant-note">Your set lineup against the best projected one. This is a points projection, unlike everything else in the app, which is dynasty market value.${unprojected?` ${unprojected} rostered player${unprojected===1?'':'s'} had no projection and count as zero.`:''}</p>
+    <p class="assistant-note">Your set lineup against the best projected one. This is a points projection, unlike everything else in the app, which is dynasty market value.${unprojected?` ${unprojected} rostered player${unprojected===1?'':'s'} had no projection and count as zero.`:''}${state.projectionsInexact?` ${state.projectionsInexact} used an approximated scoring variant.`:''}</p>
     ${advice.start.length||advice.sit.length
       ? `<div class="startsit-list">${advice.start.map(p=>row(p,'start')).join('')}${advice.sit.map(p=>row(p,'sit')).join('')}</div>`
       : '<div class="empty-cell">Your lineup already matches the best projected one.</div>'}

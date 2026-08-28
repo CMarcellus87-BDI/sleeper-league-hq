@@ -11,6 +11,8 @@ import {
   coverageSummary,
   arbitrageThresholds,
   extractProjectedPoints,
+  projectionPointsField,
+  normalizeRow,
   matchProjections,
   startSitAdvice
 } from '../fantasypros.js';
@@ -205,42 +207,79 @@ test('a shallow pool still surfaces a real positional disagreement', () => {
 
 // --- projections -----------------------------------------------------------
 
-test('projected points are found under any of the known field names', () => {
-  assert.deepEqual(extractProjectedPoints({ fpts: 18.4 }), { points: 18.4, sourceField: 'fpts' });
-  assert.deepEqual(extractProjectedPoints({ projected_points: 12 }), { points: 12, sourceField: 'projected_points' });
-  assert.deepEqual(extractProjectedPoints({ stats: { fpts: 9.1 } }), { points: 9.1, sourceField: 'stats.fpts' });
+test('both endpoint schemas normalise to the same shape', () => {
+  const ranking = normalizeRow({ player_name: 'Bijan Robinson', player_position_id: 'RB', player_team_id: 'ATL', player_id: 23133 });
+  const projection = normalizeRow({ name: 'Bijan Robinson', position_id: 'RB', team_id: 'ATL', fpid: 23133 });
+  assert.deepEqual(ranking, projection);
+});
+
+test('the scoring variant is chosen by field, not by the query parameter', () => {
+  assert.equal(projectionPointsField('PPR'), 'points_ppr');
+  assert.equal(projectionPointsField('HALF'), 'points_half');
+  assert.equal(projectionPointsField('STD'), 'points');
+});
+
+// Real payload shape from the projections endpoint.
+const gibbs = {
+  fpid: 22968,
+  name: 'Jahmyr Gibbs',
+  position_id: 'RB',
+  team_id: 'DET',
+  stats: { points: 17.47, points_ppr: 21.4, points_half: 19.43, rush_att: 16.82 }
+};
+
+test('PPR leagues get the PPR projection, not the standard one', () => {
+  const ppr = extractProjectedPoints(gibbs, 'PPR');
+  assert.equal(ppr.points, 21.4);
+  assert.equal(ppr.sourceField, 'stats.points_ppr');
+  assert.equal(ppr.exact, true);
+});
+
+test('half and standard leagues get their own variants', () => {
+  assert.equal(extractProjectedPoints(gibbs, 'HALF').points, 19.43);
+  assert.equal(extractProjectedPoints(gibbs, 'STD').points, 17.47);
+});
+
+test('a missing preferred variant falls back and flags itself inexact', () => {
+  const stdOnly = { name: 'Someone', position_id: 'RB', stats: { points: 12.5 } };
+  const result = extractProjectedPoints(stdOnly, 'PPR');
+  assert.equal(result.points, 12.5);
+  assert.equal(result.exact, false, 'caller can report that scoring was approximated');
 });
 
 test('an unrecognised payload reports null rather than projecting zero', () => {
-  assert.deepEqual(extractProjectedPoints({ some_other_name: 20 }), { points: null, sourceField: null });
-  assert.deepEqual(extractProjectedPoints({}), { points: null, sourceField: null });
+  assert.deepEqual(extractProjectedPoints({ stats: { rush_att: 12 } }, 'PPR'), { points: null, sourceField: null, exact: false });
+  assert.deepEqual(extractProjectedPoints({}, 'PPR'), { points: null, sourceField: null, exact: false });
 });
 
 test('a genuine zero projection is distinguished from a missing field', () => {
-  assert.deepEqual(extractProjectedPoints({ fpts: 0 }), { points: 0, sourceField: 'fpts' });
+  const result = extractProjectedPoints({ stats: { points_ppr: 0 } }, 'PPR');
+  assert.equal(result.points, 0);
+  assert.equal(result.sourceField, 'stats.points_ppr');
 });
 
-test('projections match onto Sleeper ids and report the field used', () => {
+test('projections match onto Sleeper ids using the projection schema', () => {
   const index = buildNameIndex({
-    '100': { full_name: 'Marvin Harrison Jr.', position: 'WR' },
-    '200': { full_name: "Ja'Marr Chase", position: 'WR' }
+    '100': { full_name: 'Jahmyr Gibbs', position: 'RB' },
+    '200': { full_name: 'Bijan Robinson', position: 'RB' }
   });
-  const { projections, fields, missing } = matchProjections([
-    { player_name: 'Marvin Harrison Jr.', player_position_id: 'WR', fpts: 15.2, player_injury_status: 'Q' },
-    { player_name: "Ja'Marr Chase", player_position_id: 'WR', fpts: 19.8 }
-  ], index);
-  assert.equal(projections.get('100').points, 15.2);
-  assert.equal(projections.get('100').injury, 'Q');
-  assert.equal(projections.get('200').points, 19.8);
-  assert.deepEqual(fields, ['fpts']);
+  const { projections, fields, missing, inexactScoring } = matchProjections([
+    gibbs,
+    { fpid: 23133, name: 'Bijan Robinson', position_id: 'RB', team_id: 'ATL', stats: { points: 15.87, points_ppr: 20.23, points_half: 18.05 } }
+  ], index, 'PPR');
+  assert.equal(projections.get('100').points, 21.4);
+  assert.equal(projections.get('100').team, 'DET');
+  assert.equal(projections.get('200').points, 20.23);
+  assert.deepEqual(fields, ['stats.points_ppr']);
   assert.equal(missing, 0);
+  assert.equal(inexactScoring, 0);
 });
 
 test('rows with no usable projection are counted, not silently dropped', () => {
-  const index = buildNameIndex({ '100': { full_name: 'Marvin Harrison Jr.', position: 'WR' } });
+  const index = buildNameIndex({ '100': { full_name: 'Jahmyr Gibbs', position: 'RB' } });
   const { projections, missing } = matchProjections([
-    { player_name: 'Marvin Harrison Jr.', player_position_id: 'WR', mystery_field: 15.2 }
-  ], index);
+    { name: 'Jahmyr Gibbs', position_id: 'RB', stats: { rush_att: 16 } }
+  ], index, 'PPR');
   assert.equal(projections.size, 0);
   assert.equal(missing, 1);
 });
@@ -267,4 +306,17 @@ test('an already optimal lineup produces no advice', () => {
   assert.equal(advice.start.length, 0);
   assert.equal(advice.sit.length, 0);
   assert.equal(advice.delta, 0);
+});
+
+
+test('a premium board is not treated as limited just because the flag says so', () => {
+  // The premium tier returns the full board while still setting the flag.
+  const summary = coverageSummary({
+    public_api_limited: true,
+    tier: 'premium',
+    players: new Array(441),
+    count: 441
+  });
+  assert.equal(summary.limited, false, 'the flag alone must not trigger fan-out');
+  assert.equal(arbitrageThresholds(summary).minDelta, 5, 'full-depth thresholds apply');
 });
