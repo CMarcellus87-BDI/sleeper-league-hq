@@ -17,6 +17,10 @@
  */
 
 const UPSTREAM = 'https://api.fantasypros.com/public/v2/json/nfl';
+
+// Which upstream resources this proxy will serve. Adding one here is the only
+// change needed to expose it; everything else is parameter validation.
+const ENDPOINTS = ['consensus-rankings', 'projections'];
 const CACHE_SECONDS = 60 * 60 * 6;
 
 // Only these may be forwarded, and only with these values. An open proxy with
@@ -26,8 +30,28 @@ const ALLOWED = {
   scoring: ['STD', 'HALF', 'PPR'],
   position: ['ALL', 'QB', 'RB', 'WR', 'TE', 'K', 'DST', 'FLEX', 'OP'],
   week: /^\d{1,2}$/,
-  season: /^\d{4}$/
+  season: /^\d{4}$/,
+  limit: /^\d{1,4}$/
 };
+
+// The free public tier caps every response at 10 players regardless of any
+// limit parameter, but the cap is per REQUEST, not per key. Asking for each
+// position separately returns the top 10 at each, which is where positional
+// disagreement actually lives. `positions=QB,RB,WR,TE` fans out and merges.
+const MAX_FANOUT = 6;
+
+async function fetchRanking(upstreamUrl, apiKey) {
+  const response = await fetch(upstreamUrl, {
+    headers: { 'x-api-key': apiKey, Accept: 'application/json' }
+  });
+  const text = await response.text();
+  if (!response.ok) return { ok: false, status: response.status, text };
+  try {
+    return { ok: true, data: JSON.parse(text) };
+  } catch {
+    return { ok: false, status: 502, text };
+  }
+}
 
 function corsHeaders(origin, allowedOrigins) {
   const allow = allowedOrigins.includes(origin) ? origin : allowedOrigins[0];
@@ -67,7 +91,14 @@ export default {
       });
     }
 
-    const upstream = new URL(`${UPSTREAM}/${season}/consensus-rankings`);
+    const endpoint = incoming.searchParams.get('endpoint') || 'consensus-rankings';
+    if (!ENDPOINTS.includes(endpoint)) {
+      return new Response(JSON.stringify({ error: 'Unknown endpoint', allowed: ENDPOINTS }), {
+        status: 400, headers: { ...cors, 'Content-Type': 'application/json' }
+      });
+    }
+
+    const upstream = new URL(`${UPSTREAM}/${season}/${endpoint}`);
     for (const [key, rule] of Object.entries(ALLOWED)) {
       if (key === 'season') continue;
       const value = incoming.searchParams.get(key);
@@ -79,6 +110,77 @@ export default {
         });
       }
       upstream.searchParams.set(key, value);
+    }
+
+    // Fan-out mode: one browser request becomes several upstream ones, merged.
+    const positionsParam = incoming.searchParams.get('positions');
+    if (positionsParam) {
+      const positions = positionsParam.split(',').map(p => p.trim().toUpperCase()).filter(Boolean);
+      if (!positions.length || positions.length > MAX_FANOUT || positions.some(p => !ALLOWED.position.includes(p))) {
+        return new Response(JSON.stringify({ error: 'Bad positions list' }), {
+          status: 400, headers: { ...cors, 'Content-Type': 'application/json' }
+        });
+      }
+
+      const fanKey = new Request(`${upstream.toString()}&__fan=${endpoint}:${positions.join(',')}`, { method: 'GET' });
+      const cachedFan = await caches.default.match(fanKey);
+      if (cachedFan) {
+        const hit = new Response(cachedFan.body, cachedFan);
+        for (const [k, v] of Object.entries(cors)) hit.headers.set(k, v);
+        return hit;
+      }
+
+      const results = await Promise.all(positions.map(position => {
+        const url = new URL(upstream.toString());
+        url.searchParams.set('position', position);
+        return fetchRanking(url.toString(), env.FANTASYPROS_API_KEY).then(r => ({ position, ...r }));
+      }));
+
+      const failed = results.filter(r => !r.ok);
+      if (failed.length === results.length) {
+        return new Response(JSON.stringify({ error: 'All upstream requests failed', status: failed[0].status }), {
+          status: 502, headers: { ...cors, 'Content-Type': 'application/json' }
+        });
+      }
+
+      const seen = new Set();
+      const players = [];
+      const coverage = {};
+      let limited = false;
+      let tier = null;
+      let lastUpdated = null;
+      for (const result of results) {
+        if (!result.ok) { coverage[result.position] = { error: result.status }; continue; }
+        const rows = result.data.players || [];
+        coverage[result.position] = { returned: rows.length, total: Number(result.data.count) || null };
+        limited = limited || result.data.public_api_limited === true;
+        tier = tier || result.data.tier || null;
+        lastUpdated = lastUpdated || result.data.last_updated || null;
+        for (const row of rows) {
+          const id = String(row.player_id ?? `${row.player_name}|${row.player_position_id}`);
+          if (seen.has(id)) continue;
+          seen.add(id);
+          players.push(row);
+        }
+      }
+
+      const body = JSON.stringify({
+        merged: true,
+        positions,
+        coverage,
+        public_api_limited: limited,
+        tier,
+        last_updated: lastUpdated,
+        count: players.length,
+        players
+      });
+      const merged = new Response(body, {
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': `public, max-age=${CACHE_SECONDS}` }
+      });
+      ctx.waitUntil(caches.default.put(fanKey, merged.clone()));
+      const out = new Response(merged.body, merged);
+      for (const [k, v] of Object.entries(cors)) out.headers.set(k, v);
+      return out;
     }
 
     // Cache at the edge so a twelve-person league is one upstream call, not twelve.

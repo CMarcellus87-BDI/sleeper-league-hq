@@ -193,6 +193,14 @@ gaps as buy-low and sell-high signals, league-wide, on your roster, and among
 unrostered players. Positive means experts rank a player better than the market
 does. Thin positional pools and gaps under five spots are filtered out as noise.
 
+The FantasyPros free public tier returns only the top 10 players per request and
+ignores `limit`, but the cap is per request rather than per key. The proxy
+therefore fans out across QB, RB, WR and TE and merges the results, giving the
+top 10 at each position. The panel reports this coverage honestly instead of
+implying a full board, and the arbitrage thresholds loosen to suit a shallow
+pool. A paid tier requires no code change: the note disappears and the
+thresholds tighten on their own.
+
 Players are matched between the two services by normalised name plus position,
 since the services use different ID spaces. Ambiguous names are left unmatched
 rather than guessed at, and the panel reports how many did not match.

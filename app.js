@@ -19,20 +19,25 @@ import {
   surplusValue,
   rosterCrunchCost,
   realizedSettledShare
-} from './analytics.js?v=8.8.0';
+} from './analytics.js?v=8.9.0';
 import {
+  optimalLineup,
   weekEfficiency,
   accumulateAllPlay,
   luckIndex,
   scheduleSwap,
   coachingRecord
-} from './efficiency.js?v=8.8.0';
+} from './efficiency.js?v=8.9.0';
 import {
   buildNameIndex,
   matchRankings,
   marketPositionRanks,
-  arbitrage
-} from './fantasypros.js?v=8.8.0';
+  arbitrage,
+  coverageSummary,
+  arbitrageThresholds,
+  matchProjections,
+  startSitAdvice
+} from './fantasypros.js?v=8.9.0';
 
 const CONFIG = {
   primaryLeagueId: new URLSearchParams(location.search).get('league') || '1326583431680761856',
@@ -40,11 +45,11 @@ const CONFIG = {
   maxHistorySeasons: 20,
   maxWeeksPerSeason: 18,
   matchupConcurrency: 4,
-  version: '8.8.0-lab',
+  version: '8.9.0-projections',
   valueApiBase: 'https://api.statsguyfantasy.com/api/v1',
   // Deployed proxy that holds the FantasyPros key. Empty disables ECR features.
   // See worker/fantasypros-proxy.js for the Cloudflare Worker, or api/ for Vercel.
-  proxyBase: 'https://dol-fantasypros.workers.dev'
+  proxyBase: 'https://dol-fantasypros.dol-fantasypros.workers.dev'
 };
 
 const state = {
@@ -89,6 +94,11 @@ const state = {
   ecrPromise: null,
   ecrError: null,
   ecrUnmatched: 0,
+  ecrCoverage: null,
+  projections: null,
+  projectionsPromise: null,
+  projectionsError: null,
+  projectionFields: [],
   chainMode: false,
   lineageReady: false,
   lineagePromise: null,
@@ -1483,13 +1493,26 @@ async function ensureEcr(){
   state.ecrPromise=(async()=>{
     await Promise.all([loadPlayerMap(),ensureMarketData().catch(()=>false)]);
     const season=String(state.league?.season||new Date().getFullYear());
-    const url=`${CONFIG.proxyBase.replace(/\/$/,'')}?type=dynasty&scoring=${encodeURIComponent(ecrScoring())}&position=ALL&season=${season}`;
+    // The free tier caps each response at 10 players, but the cap is per
+    // request. Asking position by position returns the top 10 at each, which is
+    // where positional disagreement actually shows up.
+    // Ask for the full board first. On a capped tier the response comes back
+    // flagged as limited and we fall back to per-position fan-out, which is the
+    // only way to see past 10 players there.
+    const base=CONFIG.proxyBase.replace(/\/$/,'');
+    const common=`type=dynasty&scoring=${encodeURIComponent(ecrScoring())}&season=${season}`;
+    let url=`${base}?${common}&position=ALL&limit=600`;
     const response=await fetch(url,{headers:{Accept:'application/json'}});
     if(!response.ok)throw new Error(`proxy returned HTTP ${response.status}`);
-    const payload=await response.json();
+    let payload=await response.json();
+    if(payload.public_api_limited===true){
+      const fan=await fetch(`${base}?${common}&positions=QB,RB,WR,TE`,{headers:{Accept:'application/json'}});
+      if(fan.ok)payload=await fan.json();
+    }
     const rows=payload.players||payload.rankings||[];
     if(!Array.isArray(rows)||!rows.length)throw new Error('no rankings returned');
     const {matched,unmatched}=matchRankings(rows,buildNameIndex(state.playerMap||{}));
+    state.ecrCoverage=coverageSummary(payload);
     state.ecrUnmatched=unmatched.length;
     state.ecr=matched;
     state.ecrError=null;
@@ -1511,7 +1534,8 @@ function marketRankMap(){
 }
 function arbitrageRows(){
   if(!state.ecr)return[];
-  return arbitrage({ecr:state.ecr,marketRanks:marketRankMap()});
+  const {minPool,minDelta}=arbitrageThresholds(state.ecrCoverage||{});
+  return arbitrage({ecr:state.ecr,marketRanks:marketRankMap(),minPool,minDelta});
 }
 function ecrBadge(playerId){
   const row=state.ecr?.get(String(playerId));
@@ -1522,6 +1546,73 @@ function arbitrageCardHtml(rows,signal,limit=6){
   const filtered=rows.filter(r=>r.signal===signal).slice(0,limit);
   if(!filtered.length)return '<div class="empty-cell">No meaningful disagreement at this threshold.</div>';
   return filtered.map(r=>`<div class="arb-row"><div><strong>${escapeHtml(r.name)}</strong><small>${escapeHtml(r.position)}${r.team?` · ${escapeHtml(r.team)}`:''} • market ${escapeHtml(r.position)}${r.marketRank} vs experts ${escapeHtml(r.position)}${r.positionRank}</small></div><b class="arb-${signal}">${r.delta>0?'+':''}${r.delta}</b></div>`).join('');
+}
+/**
+ * Weekly projections. Kept deliberately separate from dynasty market value:
+ * projections answer "who should I start this week", market value answers "what
+ * will my leaguemate accept". Blending them would make both worse.
+ */
+async function ensureProjections(){
+  if(state.projections)return state.projections;
+  if(!CONFIG.proxyBase){state.projectionsError='No proxy configured.';return null;}
+  if(state.projectionsPromise)return state.projectionsPromise;
+  state.projectionsPromise=(async()=>{
+    await loadPlayerMap();
+    const week=Number(state.nflState?.week||0);
+    if(!week||state.nflState?.season_type==='pre'){state.projectionsError='Projections start in week 1.';return null;}
+    const base=CONFIG.proxyBase.replace(/\/$/,'');
+    const season=String(state.league?.season||new Date().getFullYear());
+    const url=`${base}?endpoint=projections&season=${season}&week=${week}&position=ALL&scoring=${encodeURIComponent(ecrScoring())}&limit=600`;
+    const response=await fetch(url,{headers:{Accept:'application/json'}});
+    if(!response.ok)throw new Error(`proxy returned HTTP ${response.status}`);
+    const payload=await response.json();
+    const rows=payload.players||payload.projections||[];
+    if(!Array.isArray(rows)||!rows.length)throw new Error('no projections returned');
+    const {projections,fields,missing}=matchProjections(rows,buildNameIndex(state.playerMap||{}));
+    if(!projections.size){
+      throw new Error(`none of the ${rows.length} rows had a recognised points field. Check PROJECTION_FIELDS in fantasypros.js against the payload.`);
+    }
+    state.projectionFields=fields;
+    state.projectionsMissing=missing;
+    state.projections=projections;
+    state.projectionsError=null;
+    return projections;
+  })().catch(e=>{state.projectionsError=`Projections unavailable: ${e.message}`;return null;})
+    .finally(()=>state.projectionsPromise=null);
+  return state.projectionsPromise;
+}
+function renderStartSit(){
+  const wrap=$('assistant-startsit');
+  if(!wrap)return;
+  if(state.projectionsError){wrap.innerHTML=`<article class="panel"><div class="panel-head"><div><p class="eyebrow">THIS WEEK</p><h2>Start / Sit</h2></div></div><p class="assistant-note">${escapeHtml(state.projectionsError)}</p></article>`;return;}
+  if(!state.projections){wrap.innerHTML='';return;}
+  const ownerId=$('assistant-manager').value;
+  const roster=currentRosterForOwner(ownerId);
+  if(!roster){wrap.innerHTML='';return;}
+  const players=(roster.players||[]).map(id=>{
+    const projection=state.projections.get(String(id));
+    return{id:String(id),pos:playerInfo(id).position,points:Number(projection?.points)||0,name:playerInfo(id).name,injury:projection?.injury||playerInfo(id).injury_status||null};
+  }).filter(p=>p.pos);
+  const byId=new Map(players.map(p=>[p.id,{...p,sleeperId:p.id}]));
+  const best=optimalLineup(players,lineupSlots());
+  const advice=startSitAdvice({optimalIds:best.chosenIds,startedIds:(roster.starters||[]).map(String),byId});
+  const week=Number(state.nflState?.week||0);
+  const unprojected=players.filter(p=>!state.projections.has(p.id)).length;
+  const row=(p,kind)=>`<div class="startsit-row"><span class="startsit-tag startsit-${kind}">${kind==='start'?'START':'SIT'}</span><div><strong>${escapeHtml(p.name)}</strong><small>${escapeHtml(p.position||p.pos||'')}${p.injury?` · <em class="injury">${escapeHtml(p.injury)}</em>`:''}</small></div><b>${p.points.toFixed(1)}</b></div>`;
+  wrap.innerHTML=`<article class="panel"><div class="panel-head"><div><p class="eyebrow">THIS WEEK</p><h2>Start / Sit · Week ${week}</h2></div><strong class="market-total">${advice.delta>0?`+${advice.delta.toFixed(1)}`:'Optimal'}</strong></div>
+    <p class="assistant-note">Your set lineup against the best projected one. This is a points projection, unlike everything else in the app, which is dynasty market value.${unprojected?` ${unprojected} rostered player${unprojected===1?'':'s'} had no projection and count as zero.`:''}</p>
+    ${advice.start.length||advice.sit.length
+      ? `<div class="startsit-list">${advice.start.map(p=>row(p,'start')).join('')}${advice.sit.map(p=>row(p,'sit')).join('')}</div>`
+      : '<div class="empty-cell">Your lineup already matches the best projected one.</div>'}
+    <div class="market-credit">Projections by <a href="https://www.fantasypros.com" target="_blank" rel="noopener">FantasyPros</a></div>
+  </article>`;
+}
+
+function coverageNoteHtml(){
+  const c=state.ecrCoverage;
+  if(!c?.limited)return '';
+  const per=Object.entries(c.perPosition||{}).filter(([,v])=>v?.returned).map(([pos,v])=>`${escapeHtml(pos)} top ${v.returned}${v.total?` of ${v.total}`:''}`).join(' • ');
+  return `<div class="coverage-note"><strong>Limited coverage.</strong> The FantasyPros free tier returns the top 10 per position, so this compares only the top of each board${per?`: ${per}`:''}. Disagreements deeper in the rankings are not visible at this tier.</div>`;
 }
 function renderEcrPanel(){
   const wrap=$('assistant-ecr');
@@ -1535,6 +1626,7 @@ function renderEcrPanel(){
   const yours=rows.filter(r=>roster.has(String(r.sleeperId)));
   const available=rows.filter(r=>!owned.has(String(r.sleeperId)));
   wrap.innerHTML=`<article class="panel"><div class="panel-head"><div><p class="eyebrow">EXPERT CONSENSUS</p><h2>Market vs Experts</h2></div><small>${state.ecr.size} ranked${state.ecrUnmatched?` • ${state.ecrUnmatched} unmatched`:''}</small></div>
+    ${coverageNoteHtml()}
     <p class="assistant-note">Where crowd trade value and expert consensus disagree. A positive number means the experts think more of a player than the market does.</p>
     <div class="arb-grid">
       <div><p class="eyebrow">BUY LOW (LEAGUE-WIDE)</p>${arbitrageCardHtml(rows,'buy')}</div>
@@ -1710,6 +1802,7 @@ function renderRosterAssistant(){
   $('assistant-window-label').textContent=win?win.label:'—';
   $('assistant-window').innerHTML=windowCardHtml(ownerId);
   renderBestTradePartner(ownerId);
+  renderStartSit();
   renderEcrPanel();
   const trades=generateTradeSuggestions(ownerId);$('assistant-trades').innerHTML=trades.length?trades.map((x,i)=>{const f=x.framework,avg=(f.sendValue+f.receiveValue)/2||1,edge=(f.receiveValue-f.sendValue)/avg*100;return `<article class="assistant-card"><div class="assistant-card-head"><div><span>PARTNER ${i+1}</span><strong>${escapeHtml(x.partner.name)}</strong></div><b>${Math.abs(edge)<=5?'Balanced':`${Math.abs(edge).toFixed(0)}% value gap`}</b></div><p>You are #${x.myStrong.rank} at ${x.myStrong.pos} and #${x.myWeak.rank} at ${x.myWeak.pos}. ${escapeHtml(x.partner.name)} has the complementary roster shape${x.partnerWindow?` and is ${escapeHtml(x.partnerWindow.label.toLowerCase())} to your ${escapeHtml((win?.label||'position').toLowerCase())}`:''}.</p><div class="assistant-window-tags"><span>${escapeHtml(win?.label||'—')}</span><b>⇄</b><span>${escapeHtml(x.partnerWindow?.label||'—')}</span><small>${Math.round((x.windowFit||0)*100)}% window fit</small></div><div class="assistant-deal"><div><small>OFFER</small>${assetListHtml(f.send)}</div><span>⇄</span><div><small>TARGET</small>${assetListHtml(f.receive)}</div></div><div class="assistant-grades"><span>${escapeHtml(name)} <b>${gradeLetter((f.receiveValue-f.sendValue)/avg*100)}</b></span><span>${escapeHtml(x.partner.name)} <b>${gradeLetter((f.sendValue-f.receiveValue)/avg*100)}</b></span><span class="assistant-surplus">Surplus ${fmtDelta(f.surplusDelta||0)}</span></div></article>`;}).join(''):'<div class="empty-cell">No strong complementary trade match found right now. That is better than manufacturing a bad trade idea.</div>';
   const upgrades=generateFreeAgentUpgrades(ownerId);$('assistant-free-agents').innerHTML=upgrades.length?upgrades.map(x=>`<article class="assistant-card fa-upgrade"><div class="assistant-card-head"><div><span>FREE AGENT UPGRADE</span><strong>Add ${escapeHtml(x.fa.name)}</strong></div><b>+${Math.round(x.gain).toLocaleString()}</b></div><p>${escapeHtml(x.fa.pos)}${x.fa.team?` · ${escapeHtml(x.fa.team)}`:''} is currently unrostered and carries more dynasty value than a fringe asset on this roster.</p><div class="assistant-swap"><div><small>ADD</small><strong>${escapeHtml(x.fa.name)}</strong><span>${Math.round(x.fa.value).toLocaleString()} value</span></div><div>→</div><div><small>CUT CANDIDATE</small><strong>${escapeHtml(x.cut.name)}</strong><span>${Math.round(x.cut.value).toLocaleString()} value</span></div></div></article>`).join(''):'<div class="empty-cell">No meaningful same-position free-agent upgrade clears the current threshold.</div>';
@@ -1719,7 +1812,10 @@ async function loadRosterAssistant(){
   $('assistant-loading').classList.remove('hidden');$('assistant-content').classList.add('hidden');await Promise.all([ensureMarketData(),loadPlayerMap(),api(`/league/${CONFIG.primaryLeagueId}/traded_picks`).then(x=>{state.currentTradedPicks=Array.isArray(x)?x:[];clearRosterMemo();}).catch(()=>{state.currentTradedPicks=[];clearRosterMemo();})]).catch(()=>{});
   const managers=assistantManagers(),sel=$('assistant-manager'),old=sel.value;sel.innerHTML=managers.map(m=>`<option value="${escapeHtml(m.ownerId)}">${escapeHtml(m.name)}</option>`).join('');if(old&&managers.some(m=>m.ownerId===old))sel.value=old;
   renderRosterAssistant();$('assistant-loading').classList.add('hidden');$('assistant-content').classList.remove('hidden');
-  if(CONFIG.proxyBase)ensureEcr().then(()=>renderEcrPanel()).catch(()=>renderEcrPanel());
+  if(CONFIG.proxyBase){
+    ensureEcr().then(()=>renderEcrPanel()).catch(()=>renderEcrPanel());
+    ensureProjections().then(()=>renderStartSit()).catch(()=>renderStartSit());
+  }
 }
 
 async function ensureArchive(){if(!state.matchupsLoaded){$('h2h-loading').classList.remove('hidden');$('franchise-loading').classList.remove('hidden');$('records-loading').classList.remove('hidden');await loadAllMatchups();$('h2h-loading').classList.add('hidden');$('records-loading').classList.add('hidden');}renderH2HSelectors();renderFranchiseHall();renderTeamRecords();renderCareerRecords();renderSeasonExplorer(Number($('explorer-season').value||0));}
@@ -1739,7 +1835,7 @@ async function refreshAll(){
   state.currentTradedPicks=null;state.tradeRelationshipsLoaded=false;state.tradeRelationshipsPromise=null;
   state.tradeLabRendered=false;state.pickValueWarned=false;
   state.lineageReady=false;state.lineagePromise=null;state.lineageByTrade.clear();
-  state.efficiency=null;state.efficiencyPromise=null;state.ecr=null;state.ecrPromise=null;state.ecrError=null;
+  state.efficiency=null;state.efficiencyPromise=null;state.ecr=null;state.ecrPromise=null;state.ecrError=null;state.projections=null;state.projectionsPromise=null;state.projectionsError=null;
   clearRosterMemo();
   await load();
   await navigate(state.view);

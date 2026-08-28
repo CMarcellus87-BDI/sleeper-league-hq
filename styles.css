@@ -230,3 +230,17 @@
 .arb-buy{color:#7fb08a}
 .arb-sell{color:#c98080}
 @media(max-width:850px){.arb-grid{grid-template-columns:1fr}}
+
+.coverage-note{margin:8px 0 4px;padding:8px 10px;border:1px solid #4a4030;border-radius:7px;background:#12100a;color:#9a9179;font-size:8px;line-height:1.5}
+.coverage-note strong{color:#e0c36d}
+
+.startsit-list{margin-top:10px}
+.startsit-row{display:flex;align-items:center;gap:9px;padding:7px 0;border-bottom:1px solid #1a2227}
+.startsit-row:last-child{border-bottom:0}
+.startsit-row strong{display:block;font-size:10px}
+.startsit-row small{display:block;color:#69747a;font-size:7px}
+.startsit-row b{margin-left:auto;font:800 12px Inter,sans-serif;color:#e0c36d}
+.startsit-tag{padding:3px 6px;border-radius:4px;font:800 6px Inter,sans-serif;letter-spacing:.1em}
+.startsit-start{background:#16281a;color:#7fb08a;border:1px solid #2f5c3a}
+.startsit-sit{background:#2a1616;color:#c98080;border:1px solid #5c2f2f}
+.injury{color:#c98080;font-style:normal}

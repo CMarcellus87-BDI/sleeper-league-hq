@@ -7,7 +7,12 @@ import {
   matchRankings,
   parsePositionRank,
   marketPositionRanks,
-  arbitrage
+  arbitrage,
+  coverageSummary,
+  arbitrageThresholds,
+  extractProjectedPoints,
+  matchProjections,
+  startSitAdvice
 } from '../fantasypros.js';
 
 test('names normalise across the two services', () => {
@@ -143,4 +148,123 @@ test('tight expert consensus reads as higher confidence than wide disagreement',
   const tightRow = arbitrage({ ecr: tight, marketRanks }).find(r => r.sleeperId === 'a1');
   const wideRow = arbitrage({ ecr: wide, marketRanks }).find(r => r.sleeperId === 'a1');
   assert.ok(tightRow.confidence > wideRow.confidence);
+});
+
+
+// --- coverage --------------------------------------------------------------
+
+test('coverage reports how thin a limited board is', () => {
+  const summary = coverageSummary({
+    public_api_limited: true,
+    tier: 'free',
+    coverage: { QB: { returned: 10, total: 80 }, RB: { returned: 10, total: 142 } },
+    players: new Array(20)
+  });
+  assert.equal(summary.limited, true);
+  assert.equal(summary.returned, 20);
+  assert.equal(summary.total, 222);
+  assert.ok(summary.share < 0.1, 'twenty of two hundred is a small slice');
+  assert.deepEqual(summary.positions, ['QB', 'RB']);
+});
+
+test('coverage falls back to the payload when no per-position data exists', () => {
+  const summary = coverageSummary({ players: new Array(441), count: 441 });
+  assert.equal(summary.limited, false);
+  assert.equal(summary.share, 1);
+});
+
+test('a failed position does not inflate the coverage count', () => {
+  const summary = coverageSummary({
+    coverage: { QB: { returned: 10, total: 80 }, TE: { error: 502 } }
+  });
+  assert.equal(summary.returned, 10);
+  assert.equal(summary.total, 80);
+});
+
+test('thresholds loosen when the board is shallow', () => {
+  const limited = arbitrageThresholds({ limited: true });
+  const full = arbitrageThresholds({ limited: false });
+  assert.ok(limited.minDelta < full.minDelta, 'a three-spot gap matters more in a ten-deep pool');
+  assert.ok(limited.minPool < full.minPool);
+});
+
+test('a shallow pool still surfaces a real positional disagreement', () => {
+  const ecr = new Map();
+  for (let i = 1; i <= 10; i++) {
+    ecr.set(`rb${i}`, { sleeperId: `rb${i}`, name: `RB ${i}`, position: 'RB', positionRank: i, ecr: i, stdDev: 3 });
+  }
+  const marketRanks = new Map([...ecr.keys()].map((id, i) => [id, i + 1]));
+  marketRanks.set('rb8', 3);
+  const { minPool, minDelta } = arbitrageThresholds({ limited: true });
+  const rows = arbitrage({ ecr, marketRanks, minPool, minDelta });
+  const found = rows.find(r => r.sleeperId === 'rb8');
+  assert.equal(found.signal, 'sell', 'market RB3, experts RB8');
+  assert.equal(found.delta, -5);
+});
+
+
+// --- projections -----------------------------------------------------------
+
+test('projected points are found under any of the known field names', () => {
+  assert.deepEqual(extractProjectedPoints({ fpts: 18.4 }), { points: 18.4, sourceField: 'fpts' });
+  assert.deepEqual(extractProjectedPoints({ projected_points: 12 }), { points: 12, sourceField: 'projected_points' });
+  assert.deepEqual(extractProjectedPoints({ stats: { fpts: 9.1 } }), { points: 9.1, sourceField: 'stats.fpts' });
+});
+
+test('an unrecognised payload reports null rather than projecting zero', () => {
+  assert.deepEqual(extractProjectedPoints({ some_other_name: 20 }), { points: null, sourceField: null });
+  assert.deepEqual(extractProjectedPoints({}), { points: null, sourceField: null });
+});
+
+test('a genuine zero projection is distinguished from a missing field', () => {
+  assert.deepEqual(extractProjectedPoints({ fpts: 0 }), { points: 0, sourceField: 'fpts' });
+});
+
+test('projections match onto Sleeper ids and report the field used', () => {
+  const index = buildNameIndex({
+    '100': { full_name: 'Marvin Harrison Jr.', position: 'WR' },
+    '200': { full_name: "Ja'Marr Chase", position: 'WR' }
+  });
+  const { projections, fields, missing } = matchProjections([
+    { player_name: 'Marvin Harrison Jr.', player_position_id: 'WR', fpts: 15.2, player_injury_status: 'Q' },
+    { player_name: "Ja'Marr Chase", player_position_id: 'WR', fpts: 19.8 }
+  ], index);
+  assert.equal(projections.get('100').points, 15.2);
+  assert.equal(projections.get('100').injury, 'Q');
+  assert.equal(projections.get('200').points, 19.8);
+  assert.deepEqual(fields, ['fpts']);
+  assert.equal(missing, 0);
+});
+
+test('rows with no usable projection are counted, not silently dropped', () => {
+  const index = buildNameIndex({ '100': { full_name: 'Marvin Harrison Jr.', position: 'WR' } });
+  const { projections, missing } = matchProjections([
+    { player_name: 'Marvin Harrison Jr.', player_position_id: 'WR', mystery_field: 15.2 }
+  ], index);
+  assert.equal(projections.size, 0);
+  assert.equal(missing, 1);
+});
+
+test('start/sit advice names the swaps and the points at stake', () => {
+  const byId = new Map([
+    ['a', { sleeperId: 'a', name: 'Bench Star', points: 18 }],
+    ['b', { sleeperId: 'b', name: 'Sitting Dud', points: 6 }],
+    ['c', { sleeperId: 'c', name: 'Fine Where He Is', points: 14 }]
+  ]);
+  const advice = startSitAdvice({
+    optimalIds: new Set(['a', 'c']),
+    startedIds: ['b', 'c'],
+    byId
+  });
+  assert.deepEqual(advice.start.map(p => p.name), ['Bench Star']);
+  assert.deepEqual(advice.sit.map(p => p.name), ['Sitting Dud']);
+  assert.equal(advice.delta, 12);
+});
+
+test('an already optimal lineup produces no advice', () => {
+  const byId = new Map([['a', { sleeperId: 'a', name: 'Starter', points: 18 }]]);
+  const advice = startSitAdvice({ optimalIds: new Set(['a']), startedIds: ['a'], byId });
+  assert.equal(advice.start.length, 0);
+  assert.equal(advice.sit.length, 0);
+  assert.equal(advice.delta, 0);
 });

@@ -1,5 +1,59 @@
 # Changelog
 
+## v8.9.0 — projections and full rankings (MVP tier)
+
+### Added
+- **Full ranking boards.** The client now asks for the complete board and only
+  falls back to per-position fan-out if the response comes back flagged as
+  capped. On an uncapped tier the coverage note disappears and the arbitrage
+  thresholds tighten automatically, with no configuration.
+- **Weekly projections** through the proxy, which now routes to any allowlisted
+  upstream endpoint rather than rankings alone.
+- **Start / Sit panel** in the Assistant: your set lineup against the best
+  projected one, naming the swaps and the points at stake, with injury flags.
+  It reuses the same lineup optimiser the Manager Lab uses for historical
+  efficiency, run forward instead of backward.
+- Seven more tests covering projection field detection, projection matching and
+  start/sit advice. Suite is now 83.
+
+### Notes
+- FantasyPros has used several field names for projected points across API
+  versions. `extractProjectedPoints` tries the known candidates, reports which
+  one it found, and fails loudly if none match rather than silently projecting
+  every player at zero.
+- Projections are kept deliberately separate from dynasty market value.
+  Projections answer "who do I start this week"; market value answers "what will
+  my leaguemate accept". Trade valuation, VOR and the competitive window still
+  run on market value, and the Start/Sit panel is labelled as the one place a
+  points projection is used.
+- Rostered players with no projection count as zero and the panel says how many.
+
+## v8.8.1 — FantasyPros free-tier fan-out
+
+The free FantasyPros public tier caps every response at 10 players out of
+several hundred ranked, and ignores any `limit` parameter. The cap turned out to
+be per request rather than per key, so:
+
+### Added
+- **Position fan-out in the proxy.** `positions=QB,RB,WR,TE` issues one upstream
+  request per position in parallel, merges and dedupes the results, and caches
+  the merged payload at the edge. One browser request, four upstream, 40 ranked
+  players instead of 10.
+- **Coverage reporting.** The panel states plainly that it is comparing only the
+  top of each positional board, with per-position counts, rather than implying
+  the arbitrage list is exhaustive.
+- **Thresholds that scale with board depth.** A five-spot rank gap means
+  something across 142 ranked backs and nothing across ten, so a limited board
+  uses a smaller minimum pool and delta.
+- Five more tests covering coverage summarisation, partial upstream failures and
+  shallow-pool arbitrage. Suite is now 76.
+
+### Notes
+- A partially failed fan-out still returns what succeeded, with the failing
+  position recorded in `coverage` rather than dropping the whole response.
+- Upgrading the FantasyPros key to a paid tier requires no code change; the
+  coverage note disappears and thresholds tighten automatically.
+
 ## v8.8.0 — Manager Lab and expert consensus
 
 ### Added

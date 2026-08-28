@@ -149,3 +149,115 @@ export function arbitrage({ ecr = new Map(), marketRanks = new Map(), minPool = 
   }
   return rows.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
 }
+
+/**
+ * Describe how much of the ranking universe we actually received.
+ *
+ * The free FantasyPros tier returns 10 players per request out of a few hundred
+ * ranked. That is fine for tier badges and for disagreement at the top of each
+ * position, but it is not a full board, and the UI should say so rather than
+ * imply the arbitrage list is exhaustive.
+ */
+export function coverageSummary(payload = {}) {
+  const coverage = payload.coverage || {};
+  const positions = Object.keys(coverage);
+  let returned = 0;
+  let total = 0;
+  for (const pos of positions) {
+    returned += Number(coverage[pos]?.returned) || 0;
+    total += Number(coverage[pos]?.total) || 0;
+  }
+  if (!positions.length) {
+    returned = (payload.players || []).length;
+    total = Number(payload.count) || returned;
+  }
+  return {
+    limited: payload.public_api_limited === true,
+    tier: payload.tier || null,
+    positions,
+    returned,
+    total,
+    share: total > 0 ? returned / total : null,
+    perPosition: coverage
+  };
+}
+
+/**
+ * Thresholds have to scale with how deep the board is. A five-spot gap means
+ * something across 140 ranked backs and nothing across ten.
+ */
+export function arbitrageThresholds(coverage = {}) {
+  if (coverage.limited) return { minPool: 5, minDelta: 3 };
+  return { minPool: 8, minDelta: 5 };
+}
+
+// --- projections -----------------------------------------------------------
+
+/**
+ * FantasyPros has used several field names for projected points across API
+ * versions and endpoints, so rather than hard-coding one, try the known
+ * candidates and report which one hit. `sourceField` is exposed so the UI can
+ * say plainly when no recognised field was found instead of silently
+ * projecting every player at zero.
+ */
+export const PROJECTION_FIELDS = [
+  'fpts', 'projected_points', 'proj_pts', 'points',
+  'fantasy_points', 'projection', 'stats_fpts'
+];
+
+export function extractProjectedPoints(row = {}) {
+  for (const field of PROJECTION_FIELDS) {
+    const direct = Number(row?.[field]);
+    if (Number.isFinite(direct) && direct !== 0) return { points: direct, sourceField: field };
+    const nested = Number(row?.stats?.[field]);
+    if (Number.isFinite(nested) && nested !== 0) return { points: nested, sourceField: `stats.${field}` };
+  }
+  for (const field of PROJECTION_FIELDS) {
+    if (row?.[field] === 0) return { points: 0, sourceField: field };
+    if (row?.stats?.[field] === 0) return { points: 0, sourceField: `stats.${field}` };
+  }
+  return { points: null, sourceField: null };
+}
+
+/** Match a projections payload onto Sleeper ids using the same name index as ECR. */
+export function matchProjections(rows = [], nameIndex = new Map()) {
+  const { matched } = matchRankings(rows, nameIndex);
+  const projections = new Map();
+  const fields = new Set();
+  let missing = 0;
+  for (const row of rows) {
+    const name = row?.player_name || row?.name;
+    const position = row?.player_position_id || row?.position;
+    if (!name) continue;
+    const id = [...matched.values()].find(m => m.name === name && (!position || m.position === String(position).toUpperCase()))?.sleeperId;
+    if (!id) continue;
+    const { points, sourceField } = extractProjectedPoints(row);
+    if (points == null) { missing += 1; continue; }
+    if (sourceField) fields.add(sourceField);
+    projections.set(id, {
+      sleeperId: id,
+      name,
+      position: String(position || '').toUpperCase(),
+      team: row.player_team_id || row.team || '',
+      points,
+      injury: row.player_injury_status || row.injury_status || null
+    });
+  }
+  return { projections, fields: [...fields], missing, matchedCount: matched.size };
+}
+
+/**
+ * Compare a set lineup against the best projected one.
+ * Returns the swaps worth making, largest gain first.
+ */
+export function startSitAdvice({ optimalIds = new Set(), startedIds = [], byId = new Map() } = {}) {
+  const started = new Set((startedIds || []).map(String));
+  const benchStars = [...optimalIds].filter(id => !started.has(String(id)));
+  const sitting = [...started].filter(id => !optimalIds.has(String(id)));
+  const gain = id => Number(byId.get(String(id))?.points) || 0;
+  return {
+    start: benchStars.map(id => byId.get(String(id))).filter(Boolean).sort((a, b) => b.points - a.points),
+    sit: sitting.map(id => byId.get(String(id))).filter(Boolean).sort((a, b) => a.points - b.points),
+    delta: benchStars.reduce((n, id) => n + gain(id), 0) - sitting.reduce((n, id) => n + gain(id), 0)
+  };
+}
