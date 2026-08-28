@@ -1,104 +1,264 @@
-# Dynasty of Legends — Phase 1
+# Dynasty of Legends
 
-Phase 1 baseline build.
+A mobile-friendly Sleeper dynasty league archive and trade analytics dashboard.
 
-## QA status
-
-- JavaScript syntax validated.
-- DOM ID references checked against the HTML.
-- Duplicate function-definition sweep completed.
-- Mobile responsive breakpoints reviewed.
-- Week 1 preseason pin + automatic regular-season week advancement retained.
-- W-L displays intentionally exclude Sleeper tie counters.
-- Pre-2025-09-01 trades do not receive fabricated THEN grades.
-- Player names use cached Sleeper directory + market metadata fallback.
-- Trade relationships remain lazy-loaded.
-- Trade Lab renders before valuation hydration and prevents same-franchise trades.
-- Live current-week matchup refresh remains 60 seconds while the page is visible.
-
-Footer marker: `PHASE 1 · BUILD v8.0.0`.
-
-# Dynasty of Legends v7.0
-
-A mobile-friendly Sleeper dynasty league archive and trade analytics dashboard for league `1326583431680761856`.
-
-## What's new in v7
-
-- Current roster + draft-capital module inside Franchise Profiles
-- Live dynasty market values using Stats Guy Fantasy's public API (Sleeper IDs are used directly)
-- Trade Lab that builds deals from the league's real current rosters and mapped future picks
-- Historical trade grading:
-  - **THEN** uses the nearest historical market snapshot when available
-  - **NOW** replaces resolved draft picks with the actual player drafted and values the resulting assets today
-- Trade Hall of Fame / Hall of Shame cards (best outcome, worst outcome, best gamble, good process / bad result)
-- On-demand asset lineage for resolved picks so mobile users don't load the full transaction archive unless they ask for it
-- Season-by-season trade loading remains the default for performance
-
-## Value-source notes
-
-Market values are supplied by Stats Guy Fantasy (`https://api.statsguyfantasy.com/api/v1`). The app displays visible source credit as required by their public API terms. Historical snapshots currently begin on 2025-09-01, so older Sleeper trades can receive a current/outcome grade but may not have an at-the-time market grade.
+Default league is `1326583431680761856`. Any Sleeper league can be loaded with
+`?league=<league_id>` in the URL.
 
 ## Run locally
 
-Because browsers can restrict remote API requests from `file://`, serve the folder over HTTP:
+The app uses ES modules and calls remote APIs, both of which browsers block on
+`file://`. Serve it over HTTP:
 
 ```bash
-python3 -m http.server 8000
+npm run serve   # or: python3 -m http.server 8000
 ```
 
 Then open `http://localhost:8000`.
 
+## Test
+
+```bash
+npm test
+```
+
+Tests cover `analytics.js`, which holds the pure scoring and grading math with
+no DOM or network dependencies.
+
+## What it does
+
+- **Overview / Standings / History** — live league state, linked season history,
+  championship ledger, trophy wall.
+- **Legends** — career franchise table, DOL index, pain index, rivalry index,
+  and per-franchise profiles including current roster and draft capital.
+- **Trades** — season-by-season trade archive with three independent grades per
+  side (see below), award cards, and on-demand pick lineage tracing.
+- **Trade Lab** — build a hypothetical deal from real current rosters and mapped
+  future picks; reports market balance plus lineup, positional-rank and
+  draft-capital impact.
+- **Assistant** — competitive window read, positional strengths and weaknesses,
+  window-aware trade partner matchmaking, free-agent upgrades, and protected cut
+  candidates.
+- **Manager Lab** — lineup efficiency, worst start/sit calls in league history,
+  all-play records and a luck index, coaching record, and borrowed schedules.
+- **H2H / Records / Seasons** — matchup archive, trade relationships, all-time
+  team, career and player records, and a per-season explorer.
+
+## How trades are graded
+
+Each side of a trade gets up to three independent grades:
+
+| Grade | Basis | Availability |
+| --- | --- | --- |
+| **THEN** | Market value at the trade date | Trades on or after 2025-09-01 |
+| **NOW** | Market value of the resulting assets today, with resolved picks replaced by the player actually drafted | Any trade, when the value service responds |
+| **SINCE TRADE** | Fantasy points the received assets scored *while in that manager's starting lineup*, from the trade forward | Any trade in the loaded matchup archive |
+| **CHAIN** | The same, but credit follows each asset into whatever it was later flipped for | With "Follow the chain" enabled |
+
+SINCE TRADE needs no market snapshot, so it grades the full history of the
+league including trades that predate the value service. Ownership is read from
+the weekly matchup snapshot, so a player who gets flipped again later stops
+accruing to the original acquirer. Each card also shows what percentage of the
+deal has actually settled: a trade built on picks two years out is mostly
+unresolved, and the grade says so.
+
+A grade renders as `—` when the underlying data is missing. It is never
+substituted with a middling letter.
+
+### Following the chain
+
+SINCE TRADE stops counting the moment an asset is traded again. The **Follow the
+chain** toggle on the Trades view continues past that point: when an asset is
+flipped, credit carries forward into whatever came back, recursively, so a trade
+is judged on what it ultimately became rather than on the first thing it turned
+into.
+
+When an asset leaves as part of a package, the return is split across everything
+that went out, weighted by value. Because historical market snapshots only exist
+from 2025-09-01, current market value is used as the proxy for value at the time
+of each flip, and an even split is used where no values exist. Both are
+approximations and the chain view labels them as such.
+
+Recursion is capped at 6 hops and at 3% residual credit, and revisited trades are
+guarded against, so cycles (a player traded away and later reacquired) terminate.
+Each stint is bounded by the flip that ended it, so a reacquired player is never
+counted twice against the same acquisition.
+
+Enabling the toggle loads every season's trade history plus the scoring archive,
+so the first activation takes a few seconds.
+
+## The competitive window
+
+The Assistant reads each franchise on two axes rather than a single
+contend/rebuild number, because "strong but old" and "strong but young" call for
+opposite behaviour.
+
+- **Win-now strength** — starting lineup market value, record and points for,
+  as league percentiles. Roster strength carries the score early and results
+  earn weight as the sample grows, reaching a 45% share after six games.
+- **Asset timeline** — value-weighted roster age (inverted, so younger is more
+  future-leaning) plus future draft capital, again as percentiles.
+
+The two axes give four quadrants:
+
+| | Appreciating assets | Aging assets |
+| --- | --- | --- |
+| **Winning** | Contender | Window closing |
+| **Losing** | Rebuilding | Hard reset |
+
+Each quadrant carries a directive (buy or spend picks, target youth or proven
+production, which ages to sell) and every suggestion is filtered through it. A
+rebuilding roster is no longer told to trade picks for a 30-year-old just
+because the positional shapes happened to complement.
+
+Partner matchmaking now scores how well two windows *oppose* each other.
+Contenders and rebuilders want opposite things, which is what actually closes a
+deal; two teams in the same position are competing for the same assets.
+
+Percentiles are used throughout rather than ordinal ranks. In a 12-team league
+the gap between #1 and #2 is often nothing, and treating it the same as the gap
+between #6 and #7 made the old matchmaking noisy.
+
+## Value over replacement
+
+Local valuations no longer sum raw market value. Three players worth 2,000 each
+are not one player worth 6,000, because only the starting lineup scores and
+roster spots are finite.
+
+**Replacement level** is derived from this league's own rosters: the value of
+the best player at each position who would *not* be starting if every team
+started its best lineup. Starting slots include flex, allocated by how the flex
+is actually being filled across the league right now rather than split evenly,
+so a superflex that everyone fills with a QB counts as a second QB slot.
+
+**Surplus** is value minus replacement, floored at zero. Below-replacement depth
+contributes nothing, which is what makes consolidation grade correctly.
+
+**Roster crunch** charges for the players a lopsided-count trade would force out.
+The post-trade roster is compared against the league's roster limit and the
+lowest-surplus players over the limit are priced as a loss.
+
+These feed three places:
+
+- **Trade Lab** now shows four dials: market balance, surplus over replacement,
+  best-lineup value change, and roster crunch. A deal that is even on market
+  value and lopsided on surplus is exactly the deal worth arguing about.
+- **Assistant positional rooms** are measured in surplus, so a team hoarding six
+  replaceable RBs no longer outranks one with an elite starter.
+- **Suggested frameworks** reward deals where *both* sides receive a player who
+  clears replacement at the position they need. Total surplus is conserved in a
+  straight swap, so "who gains surplus" is not a meaningful test; both sides
+  getting a real starter is.
+
+Market balance is still shown alongside, because market value is what the other
+manager will actually accept. Surplus tells you whether the deal is useful;
+market value tells you whether it is agreeable.
+
+Picks are not discounted against a replacement level, since they occupy no
+lineup slot today. That slightly favours the side receiving picks in surplus
+terms, which is why surplus sits next to market balance rather than replacing it.
+
+## Manager Lab
+
+Every team-week in the archive carries both `players_points` and `starters`,
+which means the app knows not only what each team scored but what it *could*
+have scored. That gap is the most argued-about number in fantasy.
+
+- **Lineup efficiency** — points scored as a share of the best legal lineup
+  available that week, with the worst individual start/sit calls in league
+  history called out by name.
+- **All-play and luck** — every team scored against every other team, every
+  week. Expected wins come from that record; luck is the gap between it and the
+  real one. This separates "am I bad" from "did I draw the high scorer".
+- **Coaching record** — every matchup replayed with both managers fielding
+  optimal lineups. Games flagged as thrown were winnable and left on the bench.
+- **Borrowed schedules** — replay a season against any other manager's schedule.
+
+The lineup optimiser fills the most restrictive slots first, which is optimal
+for the nested slot families fantasy leagues use, with a swap pass as a
+safety net. Players whose position is missing from the Sleeper directory are
+skipped, so very old seasons may under-report the optimal lineup slightly.
+
+## Expert consensus (FantasyPros)
+
+Market values and expert rankings answer different questions and neither
+replaces the other:
+
+- **Market value** is crowdsourced trade sentiment. It tells you what your
+  leaguemate will actually accept, which is what matters in a negotiation.
+- **Expert consensus (ECR)** tells you who is actually better.
+
+The interesting part is where they disagree. The Assistant surfaces the largest
+gaps as buy-low and sell-high signals, league-wide, on your roster, and among
+unrostered players. Positive means experts rank a player better than the market
+does. Thin positional pools and gaps under five spots are filtered out as noise.
+
+Players are matched between the two services by normalised name plus position,
+since the services use different ID spaces. Ambiguous names are left unmatched
+rather than guessed at, and the panel reports how many did not match.
+
+### The proxy
+
+The FantasyPros API requires an `x-api-key` header. This is a static site, so
+anything in `app.js` is readable by anyone who opens devtools. The key therefore
+lives in a proxy:
+
+- `worker/fantasypros-proxy.js` — Cloudflare Worker, pairs with GitHub Pages.
+- `api/fantasypros.js` — Vercel/Netlify serverless equivalent.
+
+Both validate and allowlist every forwarded parameter, restrict origins, and
+cache upstream responses for six hours so a twelve-person league is one upstream
+call rather than twelve. Set `CONFIG.proxyBase` in `app.js` to the deployed URL.
+Leaving it empty disables the ECR features cleanly.
+
+**The API key never belongs in this repository.** See `.env.example`.
+
+## Known limits
+
+- Market values come from [Stats Guy Fantasy](https://statsguyfantasy.com) and
+  their historical snapshots begin 2025-09-01. Visible source credit is shown in
+  the UI as their public API terms require.
+- THEN/NOW grades are zero-sum: one side's surplus is the other's deficit. Real
+  dynasty trades can benefit both sides, and a future revision should grade each
+  side against expectation instead of against each other.
+- Chain following depends on Sleeper populating the `drops` map on trade
+  transactions. Where it is absent the chain simply finds no flip and the grade
+  falls back to the direct SINCE TRADE behaviour.
+- Chain attribution uses present-day values to split historical packages, which
+  will misweight deals whose participants have since moved a long way in value.
+- Trade award cards (best/worst outcome, best gamble) still rank on market
+  grades rather than chain grades.
+- Trade Lab sums asset values linearly, so it under-rates consolidation. Value
+  over replacement and a roster-spot cost are not yet modeled.
+- Surplus treats every position's replacement level as league-wide. A team
+  that is already three deep at a position gets no extra discount for a fourth.
+- Trade frameworks are still one-for-one plus a balancing pick. Multi-asset
+  consolidations and splits are not searched yet.
+- Player ages come from the Sleeper directory and are absent for some historical
+  and practice-squad players; those fall back to a league-average age.
+- W-L displays intentionally exclude Sleeper tie counters.
+- Browser-level live API execution is a deployment smoke test, not an automated
+  one. The managed browser policy in the build environment blocks headless
+  Chromium.
+
 ## Data sources
 
-- Sleeper public API: league, users, rosters, history, matchups, brackets, transactions, drafts and traded picks
-- Stats Guy Fantasy API: dynasty player values, rookie-pick values and historical trade-value snapshots
+- **Sleeper public API** — league, users, rosters, history, matchups, brackets,
+  transactions, drafts, traded picks, player directory.
+- **Stats Guy Fantasy API** — dynasty player values, rookie pick values,
+  historical trade-value snapshots.
 
-## v7.1 Trade Lab context
+## Files
 
-Trade Lab now evaluates more than raw market balance. For each proposed deal it simulates the post-trade rosters and reports:
+| File | Purpose |
+| --- | --- |
+| `index.html` | Markup and view shells |
+| `app.js` | Application module: data loading, state, rendering |
+| `analytics.js` | Pure scoring/grading math, imported by both app and tests |
+| `efficiency.js` | Lineup optimiser, all-play, luck, coaching record |
+| `fantasypros.js` | ECR name matching and market-vs-expert arbitrage |
+| `worker/`, `api/` | Proxy that holds the FantasyPros key |
+| `styles.css` | All styling |
+| `tests/` | `node --test` regression suite for `analytics.js` |
 
-- best legal starting-lineup market-value change based on the league roster slots
-- QB/RB/WR/TE room value and league-rank movement
-- future draft-capital value change
-- future pick-count change
-- a short contextual read such as contender move, future-focused move, or balanced roster move
-
-The lineup metric is intentionally market-value based; it is not presented as a weekly fantasy-points projection.
-
-## v7.3 additions
-
-- Live matchup refresh: current Sleeper matchup scores refresh every 60 seconds while the page is visible.
-- Live week tracking: the refresh also re-reads Sleeper NFL state, so Home advances with the NFL week automatically; preseason remains pinned to Week 1.
-- Last-updated indicator in the live data card.
-- Head to Head now includes a Trade Relationships mode.
-- Select any manager to rank their most frequent trading partners across linked league history.
-- Select a partner to view every bilateral trade across seasons, including resolved historical draft picks where available.
-- Historical trade relationship loading remains lazy and only runs when Trade Relationships is opened.
-
-
-## v7.4 reliability patch
-- Removes automatic full-history matchup crawl on startup.
-- Adds bounded Sleeper request queue, de-duplication, retries, and transaction caching.
-- Fixes H2H matchup table rendering.
-- Makes Trade Relationships progressive instead of blocking on all seasons.
-- Adds fallback loading for dynasty market values and cache-busted JS/CSS assets.
-
-## v7.5.0 reliability patch
-- Player names now resolve in two layers: fast Stats Guy Fantasy metadata first, then Sleeper's full player directory cached for 24 hours for historical/retired players.
-- Historical trade grading is isolated per trade. Stats Guy's atomic batch endpoint is still used for speed, but a failed batch is recursively split and retried down to individual deals so one malformed/unpriceable transaction cannot erase grades for an entire season.
-- Trade entries with an empty mapped side are skipped by the grader instead of poisoning a batch.
-
-
-## v8.2 Roster Assistant
-- Simplified Trade Center grades to letter grades.
-- Best/worst trade outcome cards jump directly to the trade.
-- Older trades without a historical snapshot show current outcome only.
-- Added Roster Assistant with complementary trade-partner frameworks, free-agent upgrades, and protected cut-candidate suggestions.
-
-
-## v8.3.1 regression QA
-- Fixed stale v8.2 CSS/JS cache-busters in the v8.3 package.
-- Verified no duplicate function declarations or duplicate/missing DOM IDs.
-- Verified JavaScript syntax with Node.
-- Unit-regression coverage includes preseason/current-week behavior, tie suppression, trade-grade letter bands, current-only historical trade rendering, roster positional ranking, best-partner matchmaking, trade suggestions, free-agent upgrades, and cut-candidate protections.
-- Headless Chromium execution is blocked by the managed browser policy in the build environment, so browser-level live API execution remains a deployment smoke test rather than a locally automated test.
+See `CHANGELOG.md` for version history.

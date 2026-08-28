@@ -1,0 +1,12 @@
+{
+  "name": "dynasty-of-legends",
+  "version": "8.8.0",
+  "private": true,
+  "type": "module",
+  "description": "Sleeper dynasty league archive and trade analytics dashboard.",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "deploy:proxy": "wrangler deploy",
+    "serve": "python3 -m http.server 8000"
+  }
+}

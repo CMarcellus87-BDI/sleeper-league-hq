@@ -1,0 +1,7 @@
+name = "dol-fantasypros"
+main = "worker/fantasypros-proxy.js"
+compatibility_date = "2026-01-01"
+
+# Secrets are NOT set here. Use: npx wrangler secret put FANTASYPROS_API_KEY
+[vars]
+ALLOWED_ORIGINS = "http://localhost:8000"

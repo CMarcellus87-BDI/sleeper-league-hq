@@ -1,11 +1,50 @@
+import {
+  gradeLetter,
+  edgePct,
+  isUnplayedWeek,
+  rankAmong,
+  buildPlayerIndex,
+  realizedForSide,
+  attributionShare,
+  traceAssetForward,
+  percentileRank,
+  valueWeightedAge,
+  strengthScore,
+  timelineScore,
+  classifyWindow,
+  windowDirective,
+  windowComplement,
+  starterSlotCounts,
+  replacementLevels,
+  surplusValue,
+  rosterCrunchCost,
+  realizedSettledShare
+} from './analytics.js?v=8.8.0';
+import {
+  weekEfficiency,
+  accumulateAllPlay,
+  luckIndex,
+  scheduleSwap,
+  coachingRecord
+} from './efficiency.js?v=8.8.0';
+import {
+  buildNameIndex,
+  matchRankings,
+  marketPositionRanks,
+  arbitrage
+} from './fantasypros.js?v=8.8.0';
+
 const CONFIG = {
-  primaryLeagueId: '1326583431680761856',
+  primaryLeagueId: new URLSearchParams(location.search).get('league') || '1326583431680761856',
   apiBase: 'https://api.sleeper.app/v1',
   maxHistorySeasons: 20,
   maxWeeksPerSeason: 18,
   matchupConcurrency: 4,
-  version: '8.3.1-assistant',
-  valueApiBase: 'https://api.statsguyfantasy.com/api/v1'
+  version: '8.8.0-lab',
+  valueApiBase: 'https://api.statsguyfantasy.com/api/v1',
+  // Deployed proxy that holds the FantasyPros key. Empty disables ECR features.
+  // See worker/fantasypros-proxy.js for the Cloudflare Worker, or api/ for Vercel.
+  proxyBase: ''
 };
 
 const state = {
@@ -21,13 +60,9 @@ const state = {
   playerMapFull: false,
   archive: null,
   recordView: 'team',
-  tradesLoaded: false,
-  tradesPromise: null,
-  trades: [],
+  view: 'overview',
   tradesBySeason: new Map(),
   tradePromisesBySeason: new Map(),
-  draftResolutionsLoaded: false,
-  draftResolutionsPromise: null,
   draftResolutions: new Map(),
   draftResolutionSeasons: new Set(),
   draftResolutionPromises: new Map(),
@@ -45,8 +80,42 @@ const state = {
   tradeRelationshipsLoaded: false,
   tradeRelationshipsPromise: null,
   liveRefreshTimer: null,
-  lastLiveUpdate: null
+  lastLiveUpdate: null,
+  pickValueWarned: false,
+  efficiency: null,
+  efficiencyPromise: null,
+  labSeason: 'all',
+  ecr: null,
+  ecrPromise: null,
+  ecrError: null,
+  ecrUnmatched: 0,
+  chainMode: false,
+  lineageReady: false,
+  lineagePromise: null,
+  lineageByTrade: new Map()
 };
+
+// Roster-derived values are pure functions of (rosters, traded picks, market
+// data, player map). The Assistant re-derives them thousands of times per
+// render, so memoise and invalidate explicitly when an input lands.
+const memo = {
+  rosterAssets: new Map(),
+  playerPool: new Map(),
+  snapshot: new Map(),
+  pickOwners: null,
+  dropIndex: null,
+  windows: null,
+  replacement: null
+};
+function clearRosterMemo() {
+  memo.rosterAssets.clear();
+  memo.playerPool.clear();
+  memo.snapshot.clear();
+  memo.pickOwners = null;
+  memo.dropIndex = null;
+  memo.windows = null;
+  memo.replacement = null;
+}
 
 const $ = id => document.getElementById(id);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -93,7 +162,10 @@ async function api(path) {
 function cacheGet(key,maxAgeMs){
   try{const raw=localStorage.getItem(key);if(!raw)return null;const obj=JSON.parse(raw);if(!obj?.savedAt||Date.now()-obj.savedAt>maxAgeMs)return null;return obj.data;}catch{return null;}
 }
-function cacheSet(key,data){try{localStorage.setItem(key,JSON.stringify({savedAt:Date.now(),data}));}catch{}}
+function cacheSet(key,data){
+  try{localStorage.setItem(key,JSON.stringify({savedAt:Date.now(),data}));return true;}
+  catch(e){console.warn(`Cache write failed for ${key} (likely localStorage quota):`,e?.name||e);return false;}
+}
 
 function setApiState(type, text) {
   $('api-status').textContent = text;
@@ -206,7 +278,7 @@ async function loadAllMatchups() {
   if(state.matchupsLoaded)return; if(state.matchupsPromise)return state.matchupsPromise;
   state.matchupsPromise=(async()=>{
     const tasks=[];state.history.forEach(item=>{item.matchups=[];for(let week=1;week<=CONFIG.maxWeeksPerSeason;week++)tasks.push({item,week});});let cursor=0;
-    const workers=Array.from({length:CONFIG.matchupConcurrency},async()=>{while(cursor<tasks.length){const task=tasks[cursor++];const data=await api(`/league/${task.item.league.league_id}/matchups/${task.week}`).catch(()=>[]);if(Array.isArray(data)&&data.length)task.item.matchups.push({week:task.week,data});}});
+    const workers=Array.from({length:CONFIG.matchupConcurrency},async()=>{while(cursor<tasks.length){const task=tasks[cursor++];const data=await api(`/league/${task.item.league.league_id}/matchups/${task.week}`).catch(()=>[]);if(Array.isArray(data)&&data.length&&!isUnplayedWeek(data))task.item.matchups.push({week:task.week,data});}});
     await Promise.all(workers);state.history.forEach(item=>item.matchups.sort((a,b)=>a.week-b.week));state.matchupsLoaded=true;state.archive=buildArchive();renderOverviewLegends();
   })();return state.matchupsPromise;
 }
@@ -217,12 +289,13 @@ function buildArchive(){
     const users=Object.fromEntries(item.users.map(u=>[u.user_id,u])); const ownerByRoster=Object.fromEntries(item.rosters.map(r=>[Number(r.roster_id),r.owner_id])); const table=rosterTable(item); const playoffIds=playoffRosterIds(item); const champ=champion(item); const runner=runnerUp(item);
     table.forEach(r=>{if(!r.ownerId)return; if(!franchise.has(r.ownerId))franchise.set(r.ownerId,{ownerId:r.ownerId,name:r.manager,seasons:0,titles:0,finals:0,playoffs:0,wins:0,losses:0,ties:0,pf:0,pa:0,bestSeason:null});const f=franchise.get(r.ownerId);f.name=r.manager||f.name;f.seasons++;f.wins+=r.wins;f.losses+=r.losses;f.pf+=r.pf;f.pa+=r.pa;if(playoffIds.has(r.rosterId))f.playoffs++;if(champ.ownerId===r.ownerId)f.titles++;if(runner.ownerId===r.ownerId)f.finals++;const candidate={season:item.league.season,wins:r.wins,losses:r.losses,pf:r.pf};if(!f.bestSeason||candidate.wins>f.bestSeason.wins||(candidate.wins===f.bestSeason.wins&&candidate.pf>f.bestSeason.pf))f.bestSeason=candidate;});
     item.matchups.forEach(({week,data})=>{
-      data.forEach(m=>{const ownerId=ownerByRoster[Number(m.roster_id)]; if(!ownerId)return; const user=users[ownerId];teamGames.push({ownerId,manager:managerName(user),season:item.league.season,week,points:Number(m.points||0),type:week>regularSeasonEnd(item)?'Playoffs':'Regular'});Object.entries(m.players_points||{}).forEach(([playerId,pts])=>{const points=Number(pts);if(Number.isFinite(points))playerGames.push({playerId,points,ownerId,manager:managerName(user),season:item.league.season,week});});});
+      const seasonNum=Number(item.league.season);
+      data.forEach(m=>{const ownerId=ownerByRoster[Number(m.roster_id)]; if(!ownerId)return; const user=users[ownerId];teamGames.push({ownerId,manager:managerName(user),season:item.league.season,week,points:Number(m.points||0),type:week>regularSeasonEnd(item)?'Playoffs':'Regular'});const starters=new Set((m.starters||[]).map(String));Object.entries(m.players_points||{}).forEach(([playerId,pts])=>{const points=Number(pts);if(Number.isFinite(points))playerGames.push({playerId,points,ownerId,manager:managerName(user),season:item.league.season,seasonNum,week,started:starters.has(String(playerId))});});});
       const groups={};data.forEach(m=>{if(m.matchup_id!=null)(groups[m.matchup_id]||=[]).push(m);});Object.values(groups).filter(p=>p.length===2).forEach(pair=>{const a=pair[0],b=pair[1],oa=ownerByRoster[Number(a.roster_id)],ob=ownerByRoster[Number(b.roster_id)];if(!oa||!ob)return;const sa=Number(a.points||0),sb=Number(b.points||0);pairedGames.push({season:item.league.season,week,type:week>regularSeasonEnd(item)?'Playoffs':'Regular',a:oa,b:ob,aName:names[oa]||oa,bName:names[ob]||ob,aScore:sa,bScore:sb,winner:sa===sb?null:(sa>sb?oa:ob),loser:sa===sb?null:(sa>sb?ob:oa),margin:Math.abs(sa-sb),total:sa+sb});});
     });
   });
   const franchises=[...franchise.values()].map(f=>{const gp=f.wins+f.losses;f.winPct=gp?f.wins/gp:0;f.goat=f.titles*100+f.finals*45+f.playoffs*15+f.wins*2+f.pf/100;return f;}).sort((a,b)=>b.goat-a.goat);
-  return {teamGames,pairedGames,playerGames,franchises};
+  return {teamGames,pairedGames,playerGames,franchises,playerIndex:buildPlayerIndex(playerGames)};
 }
 
 function renderOverviewLegends(){if(!state.archive)return;const top=state.archive.franchises[0];const score=[...state.archive.teamGames].sort((a,b)=>b.points-a.points)[0];const rivalry=computeRivalries()[0];$('overview-legends').innerHTML=`<div class="mini-award"><span>GOAT Leader</span><strong>${escapeHtml(top?.name||'—')}</strong><small>${top?top.goat.toFixed(1)+' DOL':'—'}</small></div><div class="mini-award"><span>Highest Team Week</span><strong>${score?score.points.toFixed(2):'—'}</strong><small>${score?`${escapeHtml(score.manager)} • ${score.season} W${score.week}`:'—'}</small></div><div class="mini-award"><span>Top Rivalry</span><strong>${rivalry?`${escapeHtml(rivalry.aName)} vs ${escapeHtml(rivalry.bName)}`:'—'}</strong><small>${rivalry?`${rivalry.games} meetings • ${rivalry.score.toFixed(1)} index`:'—'}</small></div>`;}
@@ -273,9 +346,30 @@ function renderCareerRecords(){
   $('career-record-cards').innerHTML=categories.map(([label,f,key,icon])=>{let value='—';if(f){value=key==='winPct'?pct(f[key]):key==='pf'?f[key].toFixed(1):key==='goat'?f[key].toFixed(1):String(f[key]);}return `<article class="showcase-card"><span class="showcase-icon">${icon}</span><small>${label}</small><strong>${value}</strong><p>${escapeHtml(f?.name||'—')}</p></article>`;}).join('');
 }
 
+// Sleeper's /players/nfl payload is several megabytes. Caching it whole always
+// blew the localStorage quota, so the 24h cache silently never worked. Keep
+// only the fields the UI reads (plus age/experience, which the cut-candidate
+// and timeline logic need) and the map fits comfortably.
+function slimPlayerCard(p){
+  const card={};
+  if(p.full_name)card.full_name=p.full_name;
+  if(p.first_name)card.first_name=p.first_name;
+  if(p.last_name)card.last_name=p.last_name;
+  if(p.position)card.position=p.position;
+  if(p.team)card.team=p.team;
+  if(p.age!=null)card.age=Number(p.age);
+  if(p.years_exp!=null)card.years_exp=Number(p.years_exp);
+  if(p.injury_status)card.injury_status=p.injury_status;
+  return card;
+}
 function mergePlayerCards(cards={}){
   state.playerMap=state.playerMap||{};
-  Object.entries(cards||{}).forEach(([id,p])=>{if(!p)return;state.playerMap[String(id)]={...(state.playerMap[String(id)]||{}),...p};});
+  Object.entries(cards||{}).forEach(([id,p])=>{
+    if(!p)return;
+    const slim=slimPlayerCard(p);
+    if(!slim.full_name&&!slim.first_name&&!slim.last_name&&!slim.position)return;
+    state.playerMap[String(id)]={...(state.playerMap[String(id)]||{}),...slim};
+  });
 }
 function mergeMarketPlayerNames(players=[]){
   state.playerMap=state.playerMap||{};
@@ -286,18 +380,17 @@ async function loadPlayerMap(){
   if(state.playerMapPromise)return state.playerMapPromise;
   state.playerMapPromise=(async()=>{
     const note=$('player-db-note');if(note)note.textContent='Resolving player names…';
-    const cached=cacheGet('dol-player-directory-v2',24*60*60*1000);
-    if(cached&&typeof cached==='object'){mergePlayerCards(cached);state.playerMapFull=true;if(note)note.textContent='Player names loaded from daily cache.';return state.playerMap;}
-    // Fast first layer: Stats Guy returns Sleeper IDs plus current player metadata.
-    try{
-      const market=await valueApi('/players');
-      if(market?.players?.length){mergeMarketPlayerNames(market.players);market.players.forEach(x=>state.marketPlayers.set(String(x.id),x));}
-    }catch{}
+    const cached=cacheGet('dol-player-directory-v3',24*60*60*1000);
+    if(cached&&typeof cached==='object'){mergePlayerCards(cached);state.playerMapFull=true;clearRosterMemo();if(note)note.textContent='Player names loaded from daily cache.';return state.playerMap;}
+    // Fast first layer: Stats Guy returns Sleeper IDs plus current player
+    // metadata. ensureMarketData owns that fetch so we don't request it twice.
+    try{await ensureMarketData();}catch{}
     if(note)note.textContent='Loading full Sleeper player directory for historical names…';
     try{
       const full=await api('/players/nfl');
-      mergePlayerCards(full||{});state.playerMapFull=true;cacheSet('dol-player-directory-v2',state.playerMap);
-      if(note)note.textContent='Player names resolved from Sleeper.';
+      mergePlayerCards(full||{});state.playerMapFull=true;clearRosterMemo();
+      const stored=cacheSet('dol-player-directory-v3',state.playerMap);
+      if(note)note.textContent=stored?'Player names resolved from Sleeper.':'Player names resolved (too large to cache this session).';
     }catch{
       if(note)note.textContent=Object.keys(state.playerMap||{}).length?'Current player names loaded; some retired players may still show IDs.':'Player directory unavailable; Sleeper player IDs are shown instead.';
     }
@@ -305,7 +398,7 @@ async function loadPlayerMap(){
   })().finally(()=>state.playerMapPromise=null);
   return state.playerMapPromise;
 }
-function playerInfo(id){const key=String(id),p=state.playerMap?.[key],m=state.marketPlayers.get(key);if(!p&&!m)return{name:`Player ${key}`,meta:''};return{name:p?.full_name||[p?.first_name,p?.last_name].filter(Boolean).join(' ')||m?.name||`Player ${key}`,meta:[p?.position||m?.position,p?.team||m?.team].filter(Boolean).join(' • ')}};
+function playerInfo(id){const key=String(id),p=state.playerMap?.[key],m=state.marketPlayers.get(key);if(!p&&!m)return{name:`Player ${key}`,meta:'',position:'',age:null,yearsExp:null};return{name:p?.full_name||[p?.first_name,p?.last_name].filter(Boolean).join(' ')||m?.name||`Player ${key}`,meta:[p?.position||m?.position,p?.team||m?.team].filter(Boolean).join(' • '),position:p?.position||m?.position||'',age:p?.age??null,yearsExp:p?.years_exp??null};};
 function renderPlayerRecords(){const games=[...(state.archive?.playerGames||[])].filter(g=>g.points>0).sort((a,b)=>b.points-a.points).slice(0,50);$('player-records').innerHTML=games.length?games.map((g,i)=>{const p=playerInfo(g.playerId);return`<tr><td class="rank big-rank">${i+1}</td><td class="team-cell"><strong>${escapeHtml(p.name)}</strong><span>${escapeHtml(p.meta)}</span></td><td class="gold-score">${g.points.toFixed(2)}</td><td>${g.season}</td><td>${g.week}</td><td>${escapeHtml(g.manager)}</td></tr>`;}).join(''):'<tr><td colspan="6" class="empty-cell">No player scoring data found in the matchup archive.</td></tr>';}
 
 async function showRecordView(view){state.recordView=view;$$('.record-tab').forEach(b=>b.classList.toggle('active',b.dataset.recordView===view));$$('.record-panel').forEach(p=>p.classList.add('hidden'));$(`${view}-records-panel`).classList.remove('hidden');if(view==='player'){ $('records-loading').classList.remove('hidden');$('records-status').textContent='Loading players';await loadPlayerMap();renderPlayerRecords();$('records-loading').classList.add('hidden');$('records-status').textContent='Archive loaded';}}
@@ -376,7 +469,7 @@ async function loadTradeIndexForSeason(season){
   const cacheKey=`dol:tx:${item.league.league_id}:v2`;
   const isCurrent=String(state.league?.season)===seasonKey;
   const cached=cacheGet(cacheKey,isCurrent?5*60*1000:30*24*60*60*1000);
-  if(Array.isArray(cached)){const txs=cached.map(t=>({...t,season:item.league.season,item}));state.tradesBySeason.set(seasonKey,txs);return txs;}
+  if(Array.isArray(cached)){const txs=cached.map(t=>({...t,season:item.league.season,item}));state.tradesBySeason.set(seasonKey,txs);memo.dropIndex=null;state.lineageByTrade.clear();return txs;}
   const promise=(async()=>{
     const rounds=Array.from({length:CONFIG.maxWeeksPerSeason+1},(_,i)=>i);
     let cursor=0;const found=new Map();
@@ -384,7 +477,7 @@ async function loadTradeIndexForSeason(season){
     await Promise.all(workers);
     const txs=[...found.values()].sort((a,b)=>Number(b.created||0)-Number(a.created||0));
     cacheSet(cacheKey,txs.map(({item:drop,...rest})=>rest));
-    state.tradesBySeason.set(seasonKey,txs);return txs;
+    state.tradesBySeason.set(seasonKey,txs);memo.dropIndex=null;state.lineageByTrade.clear();return txs;
   })().finally(()=>state.tradePromisesBySeason.delete(`index:${seasonKey}`));
   state.tradePromisesBySeason.set(`index:${seasonKey}`,promise);return promise;
 }
@@ -399,7 +492,6 @@ async function loadTradesForSeason(season){
     await loadPlayerMap();
     await loadDraftResolutionsForTrades(txs);
     try{Object.defineProperty(txs,'_hydrated',{value:true,configurable:true});}catch{}
-    state.trades=[...state.tradesBySeason.values()].flat().sort((a,b)=>Number(b.created||0)-Number(a.created||0));
     return txs;
   })().finally(()=>state.tradePromisesBySeason.delete(seasonKey));
   state.tradePromisesBySeason.set(seasonKey,promise);return promise;
@@ -454,6 +546,7 @@ async function ensureMarketData(){
       mergeMarketPlayerNames(players.players||[]);
       (picks.picks||[]).forEach(x=>state.marketPicks.set(String(x.id),x));
       state.marketLoaded=state.marketPlayers.size>0||state.marketPicks.size>0;
+      clearRosterMemo();
       state.marketError=state.marketLoaded?null:'Market values unavailable right now';
       return state.marketLoaded;
     }catch(e){
@@ -469,10 +562,6 @@ function marketValueForPick(season,round,slot=null){
   const exact=pickMarketId(season,round,slot), generic=pickMarketId(season,round,null), bare=`pick:${season}:${Number(round)}`;
   const p=state.marketPicks.get(exact)||state.marketPicks.get(generic)||state.marketPicks.get(bare);
   return Number(p?.value?.[dynastyFormat()]||0);
-}
-function gradeLetter(edgePct){
-  if(!Number.isFinite(edgePct))return '—';
-  if(edgePct>=25)return 'A+';if(edgePct>=15)return 'A';if(edgePct>=8)return 'A-';if(edgePct>=3)return 'B+';if(edgePct>=-3)return 'B';if(edgePct>=-8)return 'B-';if(edgePct>=-15)return 'C';if(edgePct>=-25)return 'D';return 'F';
 }
 function tradeDateISO(t){return t.created?new Date(Number(t.created)).toISOString().slice(0,10):null;}
 function genericHistoricalPickId(p){return `pick:${p.season}:${Number(p.round)}:mid`;}
@@ -508,8 +597,15 @@ function normalizeGrade(t, thenResult, nowResult){
   const ids=t.roster_ids||[];if(ids.length!==2)return null;
   const aName=rosterTradeIdentity(t.item,ids[0]),bName=rosterTradeIdentity(t.item,ids[1]);
   const toSide=(r,key)=>Number(r?.[key]?.totalValue||0);
-  const calc=(r)=>{const a=toSide(r,'sideA'),b=toSide(r,'sideB'),avg=(a+b)/2||1;return{a,b,aEdge:(a-b)/avg*100,bEdge:(b-a)/avg*100};};
-  const now=calc(nowResult),then=thenResult?calc(thenResult):null;
+  // A missing result used to fall through as 0 vs 0, which graded out as a
+  // confident "B" for both sides. An ungradeable trade must render as unknown.
+  const calc=(r)=>{
+    if(!r)return null;
+    const a=toSide(r,'sideA'),b=toSide(r,'sideB');
+    if(!a&&!b)return null;
+    return{a,b,aEdge:edgePct(a,b),bEdge:edgePct(b,a)};
+  };
+  const now=calc(nowResult),then=calc(thenResult);
   return{transactionId:t.transaction_id,aRoster:ids[0],bRoster:ids[1],aName,bName,date:tradeDateISO(t),then,now,thenRaw:thenResult,nowRaw:nowResult};
 }
 async function gradeTradesForSeason(season,txs){
@@ -525,14 +621,245 @@ async function gradeTradesForSeason(season,txs){
   })().finally(()=>state.tradeGradePromises.delete(key));
   state.tradeGradePromises.set(key,promise);return promise;
 }
-function tradeGradeHtml(g,rid){
-  if(!g)return '';
-  const isA=Number(rid)===Number(g.aRoster),nowEdge=isA?g.now.aEdge:g.now.bEdge,thenEdge=g.then?(isA?g.then.aEdge:g.then.bEdge):null;
-  if(!g.then)return `<div class="grade-strip grade-strip-single"><div><span>CURRENT OUTCOME</span><strong>${gradeLetter(nowEdge)}</strong><small>How the assets grade today</small></div></div>`;
-  return `<div class="grade-strip"><div><span>THEN</span><strong>${gradeLetter(thenEdge)}</strong><small>Market grade when dealt</small></div><div><span>NOW</span><strong>${gradeLetter(nowEdge)}</strong><small>Current outcome grade</small></div></div>`;
+// ---------------------------------------------------------------------------
+// Realized-points grading
+//
+// Market snapshots only exist from 2025-09-01, which left every earlier trade
+// ungradeable at the time it happened. But the matchup archive already holds
+// every player's weekly score AND whether they were in the starting lineup, for
+// the whole history of the league. That gives a snapshot-free outcome measure:
+// how many points did the assets each side received actually put in the lineup
+// for that manager, from the trade forward. Ownership comes from the weekly
+// matchup snapshot itself, so a player flipped again later simply stops
+// accruing to the original acquirer.
+// ---------------------------------------------------------------------------
+function tradeChrono(t){
+  const season=Number(t.season||t.item?.league?.season||0);
+  const week=Number(t.leg);
+  return{season,week:Number.isFinite(week)&&week>0?week:null};
+}
+function receivedForPoints(t,rid){
+  const playerIds=[],assets=[];
+  Object.entries(t.adds||{}).filter(([,r])=>Number(r)===Number(rid)).forEach(([pid])=>{playerIds.push(String(pid));assets.push({kind:'player'});});
+  (t.draft_picks||[]).filter(p=>Number(p.owner_id)===Number(rid)).forEach(p=>{
+    const resolved=resolvedPick(p);
+    if(resolved?.playerId){playerIds.push(String(resolved.playerId));assets.push({kind:'resolvedPick'});}
+    else assets.push({kind:'unresolvedPick'});
+  });
+  (t.waiver_budget||[]).filter(w=>Number(w.receiver)===Number(rid)).forEach(()=>assets.push({kind:'faab'}));
+  return{playerIds,assets};
+}
+function realizedTradeSummary(t){
+  const index=state.archive?.playerIndex;
+  const ids=t.roster_ids||[];
+  if(!index||ids.length!==2)return null;
+  const {season,week}=tradeChrono(t);
+  if(!season)return null;
+  const sides=ids.map(rid=>{
+    const ownerId=tradeOwnerId(t.item,rid);
+    const {playerIds,assets}=receivedForPoints(t,rid);
+    const totals=ownerId?realizedForSide(index,playerIds,ownerId,season,week):{started:0,rostered:0,startedWeeks:0,rosteredWeeks:0,counted:0};
+    return{rosterId:Number(rid),ownerId,assets,...totals};
+  });
+  if(!sides[0].rosteredWeeks&&!sides[1].rosteredWeeks)return null;
+  const settled=realizedSettledShare([...sides[0].assets,...sides[1].assets]);
+  return{
+    settled,
+    byRoster:new Map(sides.map((s,i)=>[s.rosterId,{...s,edge:edgePct(s.started,sides[1-i].started)}]))
+  };
+}
+// ---------------------------------------------------------------------------
+// Chain-following ("what it actually became")
+//
+// The realized grade above stops the moment an asset is traded again. But if
+// you flipped the player you got for two others a month later, the real outcome
+// of the original trade is those two others. This walks each received asset
+// forward through every subsequent trade by the same manager, splitting credit
+// proportionally when an asset leaves as part of a package.
+//
+// Attribution uses current market value as a proxy for value at the time of the
+// flip, because historical snapshots only exist from 2025-09-01. Where no
+// values are available it falls back to an even split. Both are approximations
+// and the UI says so.
+// ---------------------------------------------------------------------------
+
+function tradeDropIndex(){
+  if(memo.dropIndex)return memo.dropIndex;
+  const index=new Map();
+  for(const t of [...state.tradesBySeason.values()].flat()){
+    for(const [pid,rid] of Object.entries(t.drops||{})){
+      const key=String(pid);
+      let bucket=index.get(key);
+      if(!bucket){bucket=[];index.set(key,bucket);}
+      bucket.push({trade:t,rosterId:Number(rid),created:Number(t.created||0)});
+    }
+  }
+  for(const bucket of index.values())bucket.sort((a,b)=>a.created-b.created);
+  memo.dropIndex=index;return index;
+}
+function nextTradeSendingPlayer(playerId,ownerId,afterCreated){
+  for(const entry of tradeDropIndex().get(String(playerId))||[]){
+    if(entry.created<=afterCreated)continue;
+    const rid=rosterIdForOwnerInTrade(entry.trade,ownerId);
+    if(rid==null||Number(rid)!==entry.rosterId)continue;
+    return entry.trade;
+  }
+  return null;
+}
+function outgoingAssetsFor(t,rid){
+  const out=[];
+  Object.entries(t.drops||{}).filter(([,r])=>Number(r)===Number(rid)).forEach(([pid])=>out.push({kind:'player',id:String(pid),label:playerInfo(pid).name,value:marketValueForPlayer(pid)}));
+  (t.draft_picks||[]).filter(p=>Number(p.previous_owner_id)===Number(rid)).forEach(p=>{
+    const resolved=resolvedPick(p);
+    out.push({kind:'pick',id:`pick:${p.season}:${p.round}:${p.roster_id}`,label:resolved?.playerName?`${pickLabel(p)} (${resolved.playerName})`:pickLabel(p),value:resolved?.playerId?marketValueForPlayer(resolved.playerId):marketValueForPick(p.season,p.round)});
+  });
+  return out;
+}
+function lineageContext(){
+  return{
+    playerIndex:state.archive.playerIndex,
+    describe:id=>{const p=playerInfo(id);return{name:p.name,meta:p.meta};},
+    nextFlip:(playerId,ownerId,afterCreated)=>nextTradeSendingPlayer(playerId,ownerId,afterCreated),
+    rosterFor:(t,ownerId)=>rosterIdForOwnerInTrade(t,ownerId),
+    outgoing:(t,rid)=>outgoingAssetsFor(t,rid),
+    received:(t,rid)=>receivedForPoints(t,rid).playerIds,
+    chrono:t=>tradeChrono(t),
+    createdOf:t=>Number(t.created||0),
+    idOf:t=>t.transaction_id,
+    seasonOf:t=>t.season,
+    dateOf:t=>tradeDateISO(t)
+  };
+}
+function lineageTradeSummary(t){
+  if(!state.lineageReady||!state.archive?.playerIndex)return null;
+  const ids=t.roster_ids||[];
+  if(ids.length!==2)return null;
+  const cached=state.lineageByTrade.get(t.transaction_id);
+  if(cached!==undefined)return cached;
+  const from=tradeChrono(t);
+  if(!from.season){state.lineageByTrade.set(t.transaction_id,null);return null;}
+  const sides=ids.map(rid=>{
+    const ownerId=tradeOwnerId(t.item,rid);
+    const {playerIds,assets}=receivedForPoints(t,rid);
+    const roots=[];let total=0,hops=0;
+    if(ownerId){
+      const ctx=lineageContext();
+      for(const pid of playerIds){
+        const traced=traceAssetForward(ctx,pid,ownerId,from,Number(t.created||0),1,0,new Set());
+        roots.push(traced.node);total+=traced.total;hops+=traced.hops;
+      }
+    }
+    return{rosterId:Number(rid),ownerId,assets,roots,total,hops};
+  });
+  if(!sides[0].total&&!sides[1].total){state.lineageByTrade.set(t.transaction_id,null);return null;}
+  const summary={
+    settled:realizedSettledShare([...sides[0].assets,...sides[1].assets]),
+    hops:sides[0].hops+sides[1].hops,
+    byRoster:new Map(sides.map((s,i)=>[s.rosterId,{...s,edge:edgePct(s.total,sides[1-i].total)}]))
+  };
+  state.lineageByTrade.set(t.transaction_id,summary);
+  return summary;
+}
+function lineageNodeHtml(node,depth=0){
+  const pct=Math.round(node.weight*100);
+  const creditText=node.weight<0.999?` • ${pct}% credited`:'';
+  const held=`${node.held.toFixed(1)} started pts${creditText}`;
+  const flip=node.flip
+    ?`<div class="lineage-step lineage-flip"><b>${escapeHtml(node.flip.date||String(node.flip.season))}</b><span>→</span><div><strong>Flipped${node.flip.packaged?' as part of a package':''}</strong><small>${node.flip.returned} asset${node.flip.returned===1?'':'s'} back${node.flip.packaged?` • ${Math.round(node.flip.share*100)}% of the return attributed here`:''}</small></div></div>`
+    :'<div class="lineage-step lineage-end"><b>End</b><span>→</span><div><strong>Never traded again</strong><small>chain terminates here</small></div></div>';
+  return `<div class="lineage-node" style="--depth:${depth}"><div class="lineage-step"><b>${depth?'↳':'◆'}</b><span></span><div><strong>${escapeHtml(node.name)}</strong><small>${escapeHtml(held)}</small></div></div>${flip}${node.children.map(c=>lineageNodeHtml(c,depth+1)).join('')}</div>`;
+}
+function renderLineageChain(transactionId,rosterId){
+  const box=$(`chain-${transactionId}-${rosterId}`);
+  if(!box)return;
+  const t=[...state.tradesBySeason.values()].flat().find(x=>x.transaction_id===transactionId);
+  const side=t?lineageTradeSummary(t)?.byRoster?.get(Number(rosterId)):null;
+  box.classList.remove('hidden');
+  if(!side||!side.roots.length){box.textContent='No traceable scoring chain on this side.';return;}
+  box.innerHTML=`${side.roots.map(n=>lineageNodeHtml(n)).join('')}<div class="lineage-note">Package splits use current market value as a proxy for value at the time of each flip.</div>`;
+}
+function bindChainButtons(){
+  $$('.chain-button').forEach(btn=>btn.addEventListener('click',()=>renderLineageChain(btn.dataset.chainId,Number(btn.dataset.chainRoster))));
+}
+async function ensureLineageData(){
+  if(state.lineageReady)return true;
+  if(state.lineagePromise)return state.lineagePromise;
+  const node=$('trade-analytics-loading');
+  state.lineagePromise=(async()=>{
+    const seasons=state.history.map(item=>String(item.league.season)).sort((a,b)=>Number(a)-Number(b));
+    const step=(text)=>{if(node){node.innerHTML=`<span class="spinner"></span>${text}`;node.classList.remove('hidden');}};
+    step('Loading scoring archive…');
+    await loadAllMatchups();
+    step('Loading player names…');
+    await loadPlayerMap();
+    for(let i=0;i<seasons.length;i++){
+      step(`Loading trade history ${i+1}/${seasons.length} seasons…`);
+      await loadTradeIndexForSeason(seasons[i]);
+      await loadDraftResolutionsForSeason(seasons[i]);
+    }
+    step('Loading market values for package attribution…');
+    await ensureMarketData().catch(()=>false);
+    memo.dropIndex=null;
+    state.lineageByTrade.clear();
+    state.lineageReady=true;
+    if(node)node.classList.add('hidden');
+    return true;
+  })().catch(e=>{
+    if(node){node.innerHTML=`Chain grades could not finish loading: ${escapeHtml(e.message)}`;node.classList.remove('hidden');}
+    return false;
+  }).finally(()=>state.lineagePromise=null);
+  return state.lineagePromise;
+}
+async function setChainMode(on){
+  state.chainMode=!!on;
+  const toggle=$('trade-chain-toggle');
+  if(toggle)toggle.setAttribute('aria-pressed',String(state.chainMode));
+  if(state.chainMode)await ensureLineageData();
+  renderTrades();
+}
+
+// Chain mode swaps the realized grade for the lineage-adjusted one, falling
+// back to the direct grade for any trade the chain walker cannot resolve.
+function tradeOutcomeSummary(t){
+  if(state.chainMode){
+    const chained=lineageTradeSummary(t);
+    if(chained)return{...chained,chain:true};
+  }
+  return realizedTradeSummary(t);
+}
+function chainButtonHtml(t,rid,realized){
+  if(!realized?.chain)return '';
+  const side=realized.byRoster.get(Number(rid));
+  if(!side?.hops)return '';
+  const id=escapeHtml(t.transaction_id);
+  return `<button type="button" class="chain-button" data-chain-id="${id}" data-chain-roster="${rid}">Show the value chain →</button><div class="lineage-box hidden" id="chain-${id}-${rid}"></div>`;
+}
+
+function realizedCellHtml(realized,rid){
+  const side=realized?.byRoster?.get(Number(rid));
+  if(!side)return '';
+  const settledText=realized.settled!=null?` • ${Math.round(realized.settled*100)}% settled`:'';
+  const points=side.total!=null?side.total:side.started;
+  if(realized.chain){
+    return `<div><span>CHAIN</span><strong>${gradeLetter(side.edge)}</strong><small>${points.toFixed(1)} chained pts • ${side.hops} hop${side.hops===1?'':'s'}${settledText}</small></div>`;
+  }
+  return `<div><span>SINCE TRADE</span><strong>${gradeLetter(side.edge)}</strong><small>${points.toFixed(1)} started pts${settledText}</small></div>`;
+}
+function tradeGradeHtml(g,rid,realized){
+  const cells=[];
+  if(g){
+    const isA=Number(rid)===Number(g.aRoster);
+    if(g.then)cells.push(`<div><span>THEN</span><strong>${gradeLetter(isA?g.then.aEdge:g.then.bEdge)}</strong><small>Market grade when dealt</small></div>`);
+    if(g.now)cells.push(`<div><span>NOW</span><strong>${gradeLetter(isA?g.now.aEdge:g.now.bEdge)}</strong><small>Value of the assets today</small></div>`);
+  }
+  const realizedCell=realizedCellHtml(realized,rid);
+  if(realizedCell)cells.push(realizedCell);
+  if(!cells.length)return '';
+  const sizeClass=cells.length===1?' grade-strip-single':cells.length===3?' grade-strip-triple':'';
+  return `<div class="grade-strip${sizeClass}">${cells.join('')}</div>`;
 }
 function renderTradeAwards(txs,grades){
-  const candidates=[];txs.forEach(t=>{const g=grades?.get(t.transaction_id);if(!g)return;candidates.push({t,g,rid:g.aRoster,name:g.aName,edge:g.now.aEdge,then:g.then?.aEdge??null});candidates.push({t,g,rid:g.bRoster,name:g.bName,edge:g.now.bEdge,then:g.then?.bEdge??null});});
+  const candidates=[];txs.forEach(t=>{const g=grades?.get(t.transaction_id);if(!g?.now)return;candidates.push({t,g,rid:g.aRoster,name:g.aName,edge:g.now.aEdge,then:g.then?.aEdge??null});candidates.push({t,g,rid:g.bRoster,name:g.bName,edge:g.now.bEdge,then:g.then?.bEdge??null});});
   if(!candidates.length){$('trade-awards').classList.add('hidden');return;}
   const best=[...candidates].sort((a,b)=>b.edge-a.edge)[0],worst=[...candidates].sort((a,b)=>a.edge-b.edge)[0];
   const gamble=[...candidates].filter(x=>x.then!=null&&x.then<-3&&x.edge>8).sort((a,b)=>(b.edge-b.then)-(a.edge-a.then))[0];
@@ -544,16 +871,43 @@ function bindTradeAwardJumps(){
   $$('[data-trade-jump]').forEach(btn=>btn.addEventListener('click',()=>{const card=$(`trade-${btn.dataset.tradeJump}`);if(!card)return;card.scrollIntoView({behavior:'smooth',block:'center'});card.classList.add('trade-card-highlight');setTimeout(()=>card.classList.remove('trade-card-highlight'),1800);}));
 }
 function currentRosterForOwner(ownerId){return state.rosters.find(r=>r.owner_id===ownerId)||null;}
-function pickOwnerFor(originalRoster,season,round){const moved=(state.currentTradedPicks||[]).filter(p=>Number(p.roster_id)===Number(originalRoster)&&String(p.season)===String(season)&&Number(p.round)===Number(round)).sort((a,b)=>Number(b.owner_id||0)-Number(a.owner_id||0))[0];return moved?Number(moved.owner_id):Number(originalRoster);}
+function pickKey(originalRoster,season,round){return `${Number(originalRoster)}|${season}|${Number(round)}`;}
+function pickOwnerIndex(){
+  if(memo.pickOwners)return memo.pickOwners;
+  const index=new Map();
+  for(const p of state.currentTradedPicks||[]){
+    if(p?.roster_id==null||p?.owner_id==null)continue;
+    index.set(pickKey(p.roster_id,String(p.season),p.round),Number(p.owner_id));
+  }
+  memo.pickOwners=index;return index;
+}
+function pickOwnerFor(originalRoster,season,round){
+  const moved=pickOwnerIndex().get(pickKey(originalRoster,String(season),round));
+  return moved==null?Number(originalRoster):moved;
+}
 function currentDraftCapital(rosterId){
   const base=Number(state.league?.season||new Date().getFullYear())+1,rounds=Number(state.league?.settings?.draft_rounds||4),years=[base,base+1,base+2],out=[];
   for(const year of years)for(let round=1;round<=rounds;round++)for(const original of state.rosters.map(r=>Number(r.roster_id)))if(pickOwnerFor(original,year,round)===Number(rosterId))out.push({season:year,round,originalRoster:original,value:marketValueForPick(year,round)});
+  // If the value service has pick data but none of our IDs resolve, the key
+  // format has drifted. Fail loudly once instead of silently valuing every
+  // future pick at zero.
+  if(out.length&&state.marketPicks.size&&!state.pickValueWarned&&out.every(p=>!p.value)){
+    state.pickValueWarned=true;
+    console.warn('No draft-pick market values matched. Expected ids like',pickMarketId(base,1),'but the service returned keys such as',[...state.marketPicks.keys()].slice(0,5));
+    state.marketError=state.marketError||'Draft-pick values unavailable (pick ID format mismatch)';
+  }
   return out;
 }
 function rosterAssets(ownerId){
+  const cached=memo.rosterAssets.get(ownerId);if(cached)return cached;
+  const built=buildRosterAssets(ownerId);
+  memo.rosterAssets.set(ownerId,built);
+  return built;
+}
+function buildRosterAssets(ownerId){
   const roster=currentRosterForOwner(ownerId);if(!roster)return[];
   const starters=new Set((roster.starters||[]).map(String)),taxi=new Set((roster.taxi||[]).map(String)),reserve=new Set((roster.reserve||[]).map(String));
-  const players=(roster.players||[]).map(id=>{const p=playerInfo(id);return{id:String(id),type:'player',label:p.name,meta:[p.meta,starters.has(String(id))?'Starter':taxi.has(String(id))?'Taxi':reserve.has(String(id))?'IR/Reserve':'Bench'].filter(Boolean).join(' • '),value:marketValueForPlayer(id)};}).sort((a,b)=>b.value-a.value);
+  const players=(roster.players||[]).map(id=>{const p=playerInfo(id);return{id:String(id),type:'player',label:p.name,meta:[p.meta,starters.has(String(id))?'Starter':taxi.has(String(id))?'Taxi':reserve.has(String(id))?'IR/Reserve':'Bench'].filter(Boolean).join(' • '),value:marketValueForPlayer(id),age:p.age,yearsExp:p.yearsExp};}).sort((a,b)=>b.value-a.value);
   const picks=currentDraftCapital(roster.roster_id).map(p=>({id:`pick:${p.season}:${p.round}:mid|orig:${p.originalRoster}`,type:'pick',label:`${p.season} Round ${p.round}`,meta:p.originalRoster===Number(roster.roster_id)?'Own pick':`From roster ${p.originalRoster}`,value:p.value}));
   return [...players,...picks];
 }
@@ -569,37 +923,162 @@ function renderFranchiseProfile(ownerId){
   const games=state.archive.teamGames.filter(g=>g.ownerId===ownerId).sort((a,b)=>b.points-a.points),rivalry=computeRivalries().find(r=>r.a===ownerId||r.b===ownerId);
   const seasons=seasonItemForOwner(ownerId).map(item=>{const row=rosterTable(item).find(r=>r.ownerId===ownerId);return row?{...row,season:item.league.season,champ:champion(item).ownerId===ownerId,runner:runnerUp(item).ownerId===ownerId}:null;}).filter(Boolean);
   const user=ownerUser(ownerId),avatar=avatarUrl(user),high=games[0],rivalName=rivalry?(rivalry.a===ownerId?rivalry.bName:rivalry.aName):'—';
-  $('franchise-profile-content').innerHTML=`<div class="profile-hero"><div class="profile-avatar">${avatar?`<img src="${avatar}" alt="">`:'♛'}</div><div><span class="profile-kicker">${f.seasons} SEASONS • ${f.titles} TITLES</span><strong>${escapeHtml(f.name)}</strong><small>${f.wins}-${f.losses} career • ${pct(f.winPct)} win rate</small></div><b>${f.goat.toFixed(1)}<small>DOL</small></b></div><div class="profile-metrics"><div><span>Career PF</span><strong>${f.pf.toFixed(1)}</strong></div><div><span>Playoffs</span><strong>${f.playoffs}</strong></div><div><span>Finals</span><strong>${f.finals+f.titles}</strong></div><div><span>Best Season</span><strong>${f.bestSeason?`${f.bestSeason.wins}-${f.bestSeason.losses}`:'—'}</strong></div><div><span>High Week</span><strong>${high?high.points.toFixed(2):'—'}</strong></div><div><span>Top Rival</span><strong>${escapeHtml(rivalName)}</strong></div></div>${state.marketLoaded?rosterProfileHtml(ownerId):'<div class="inline-status"><span class="spinner"></span>Loading current roster values…</div>'}<div class="profile-split"><div><p class="eyebrow">SEASON LEDGER</p><div class="profile-season-list">${seasons.map(x=>`<div><span>${x.season}</span><strong>${x.wins}-${x.losses}</strong><small>${x.pf.toFixed(1)} PF</small><b>${x.champ?'🏆':x.runner?'🥈':''}</b></div>`).join('')}</div></div><div><p class="eyebrow">BIGGEST WEEKS</p><div class="rank-list">${games.slice(0,5).map((g,i)=>`<div class="rank-row"><span>${i+1}</span><div><strong>${g.points.toFixed(2)}</strong><small>${g.season} • Week ${g.week} • ${g.type}</small></div><b>🔥</b></div>`).join('')}</div></div></div>`;
+  $('franchise-profile-content').innerHTML=`<div class="profile-hero"><div class="profile-avatar">${avatar?`<img src="${escapeHtml(avatar)}" alt="">`:'♛'}</div><div><span class="profile-kicker">${f.seasons} SEASONS • ${f.titles} TITLES</span><strong>${escapeHtml(f.name)}</strong><small>${f.wins}-${f.losses} career • ${pct(f.winPct)} win rate</small></div><b>${f.goat.toFixed(1)}<small>DOL</small></b></div><div class="profile-metrics"><div><span>Career PF</span><strong>${f.pf.toFixed(1)}</strong></div><div><span>Playoffs</span><strong>${f.playoffs}</strong></div><div><span>Finals</span><strong>${f.finals+f.titles}</strong></div><div><span>Best Season</span><strong>${f.bestSeason?`${f.bestSeason.wins}-${f.bestSeason.losses}`:'—'}</strong></div><div><span>High Week</span><strong>${high?high.points.toFixed(2):'—'}</strong></div><div><span>Top Rival</span><strong>${escapeHtml(rivalName)}</strong></div></div>${state.marketLoaded?rosterProfileHtml(ownerId):'<div class="inline-status"><span class="spinner"></span>Loading current roster values…</div>'}<div class="profile-split"><div><p class="eyebrow">SEASON LEDGER</p><div class="profile-season-list">${seasons.map(x=>`<div><span>${x.season}</span><strong>${x.wins}-${x.losses}</strong><small>${x.pf.toFixed(1)} PF</small><b>${x.champ?'🏆':x.runner?'🥈':''}</b></div>`).join('')}</div></div><div><p class="eyebrow">BIGGEST WEEKS</p><div class="rank-list">${games.slice(0,5).map((g,i)=>`<div class="rank-row"><span>${i+1}</span><div><strong>${g.points.toFixed(2)}</strong><small>${g.season} • Week ${g.week} • ${g.type}</small></div><b>🔥</b></div>`).join('')}</div></div></div>`;
 }
 async function enhanceFranchiseMarket(){await ensureMarketData();const selected=$('franchise-select').value;if(selected)renderFranchiseProfile(selected);}
 function renderTrades(){
   const filter=$('trade-season').value||String(state.league?.season||''),txs=filter==='all'?[...state.tradesBySeason.values()].flat():state.tradesBySeason.get(String(filter))||[];
   const activity=new Map();let picks=0;txs.forEach(t=>{(t.roster_ids||[]).forEach(r=>{const n=rosterTradeIdentity(t.item,r);activity.set(n,(activity.get(n)||0)+1);});picks+=(t.draft_picks||[]).length;});const active=[...activity.entries()].sort((a,b)=>b[1]-a[1])[0],biggest=[...txs].sort((a,b)=>tradeAssetCount(b)-tradeAssetCount(a))[0],grades=filter==='all'?null:state.tradeGradesBySeason.get(String(filter));
   $('trade-count').textContent=txs.length;$('trade-most-active').textContent=active?.[0]||'—';$('trade-most-active-detail').textContent=active?`${active[1]} trades involved`:'—';$('trade-biggest').textContent=biggest?tradeAssetCount(biggest):'—';$('trade-picks').textContent=picks;if(grades)renderTradeAwards(txs,grades);else $('trade-awards').classList.add('hidden');
-  $('trade-list').innerHTML=txs.length?txs.map(t=>{const ids=t.roster_ids||[],g=grades?.get(t.transaction_id),date=t.created?new Date(Number(t.created)).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}):`${t.season} W${t.leg||'?'}`;return `<article class="trade-card" id="trade-${escapeHtml(t.transaction_id)}"><div class="trade-card-head"><div><span>${escapeHtml(t.season)} • Week ${t.leg??'—'}</span><strong>${escapeHtml(date)}</strong></div><b>${tradeAssetCount(t)} assets</b></div><div class="trade-sides">${ids.map((rid,i)=>{const assets=tradeAssets(t,rid);return `<div class="trade-side"><h3>${escapeHtml(rosterTradeIdentity(t.item,rid))}</h3>${tradeGradeHtml(g,rid)}<span class="received-label">RECEIVED</span>${assets.length?assets.map(a=>`<div class="asset ${a.type}"><span>${a.type.includes('pick')?'◇':a.type==='faab'?'$':'●'}</span><div><strong>${escapeHtml(a.label)}</strong><small>${escapeHtml(a.meta||'')}</small></div></div>`).join(''):'<div class="asset empty"><div><strong>No mapped incoming assets</strong><small>Sleeper transaction metadata may be incomplete.</small></div></div>'}${(t.draft_picks||[]).some(p=>Number(p.owner_id)===Number(rid)&&resolvedPick(p))?`<button type="button" class="trace-button" data-trace-id="${escapeHtml(t.transaction_id)}" data-trace-roster="${rid}">Trace what it became →</button><div class="lineage-box hidden" id="trace-${escapeHtml(t.transaction_id)}-${rid}"></div>`:''}</div>${i<ids.length-1?'<div class="trade-arrow">⇄</div>':''}`;}).join('')}</div></article>`;}).join(''):`<article class="panel empty-cell">No completed trades found for ${escapeHtml(filter==='all'?'the loaded seasons':filter)}.</article>`;
-  $('trades-loading').classList.add('hidden');$('trades-content').classList.remove('hidden');bindTraceButtons();bindTradeAwardJumps();
+  $('trade-list').innerHTML=txs.length?txs.map(t=>{const ids=t.roster_ids||[],g=grades?.get(t.transaction_id),realized=tradeOutcomeSummary(t),date=t.created?new Date(Number(t.created)).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}):`${t.season} W${t.leg||'?'}`;return `<article class="trade-card" id="trade-${escapeHtml(t.transaction_id)}"><div class="trade-card-head"><div><span>${escapeHtml(t.season)} • Week ${t.leg??'—'}</span><strong>${escapeHtml(date)}</strong></div><b>${tradeAssetCount(t)} assets</b></div><div class="trade-sides">${ids.map((rid,i)=>{const assets=tradeAssets(t,rid);return `<div class="trade-side"><h3>${escapeHtml(rosterTradeIdentity(t.item,rid))}</h3>${tradeGradeHtml(g,rid,realized)}<span class="received-label">RECEIVED</span>${assets.length?assets.map(a=>`<div class="asset ${a.type}"><span>${a.type.includes('pick')?'◇':a.type==='faab'?'$':'●'}</span><div><strong>${escapeHtml(a.label)}</strong><small>${escapeHtml(a.meta||'')}</small></div></div>`).join(''):'<div class="asset empty"><div><strong>No mapped incoming assets</strong><small>Sleeper transaction metadata may be incomplete.</small></div></div>'}${chainButtonHtml(t,rid,realized)}${(t.draft_picks||[]).some(p=>Number(p.owner_id)===Number(rid)&&resolvedPick(p))?`<button type="button" class="trace-button" data-trace-id="${escapeHtml(t.transaction_id)}" data-trace-roster="${rid}">Trace what it became →</button><div class="lineage-box hidden" id="trace-${escapeHtml(t.transaction_id)}-${rid}"></div>`:''}</div>${i<ids.length-1?'<div class="trade-arrow">⇄</div>':''}`;}).join('')}</div></article>`;}).join(''):`<article class="panel empty-cell">No completed trades found for ${escapeHtml(filter==='all'?'the loaded seasons':filter)}.</article>`;
+  $('trades-loading').classList.add('hidden');$('trades-content').classList.remove('hidden');bindTraceButtons();bindChainButtons();bindTradeAwardJumps();
 }
 async function loadSelectedTradeSeason(){
   const selected=$('trade-season').value||String(state.league?.season||'');$('trades-loading').classList.remove('hidden');$('trades-content').classList.add('hidden');$('trades-loading').innerHTML='<span class="spinner"></span>Loading '+escapeHtml(selected==='all'?'all trade seasons':`${selected} trades`)+'…';
   if(selected==='all'){for(const season of state.history.map(item=>String(item.league.season)))await loadTradesForSeason(season);renderTrades();return;}
   const txs=await loadTradesForSeason(selected);renderTrades();$('trade-analytics-loading').classList.remove('hidden');await gradeTradesForSeason(selected,txs).catch(()=>null);$('trade-analytics-loading').classList.add('hidden');renderTrades();
+  ensureRealizedArchive();
+}
+// Realized grading needs the weekly scoring archive. Load it in the background
+// so market grades render first and the "since trade" column fills in after.
+function ensureRealizedArchive(){
+  if(state.matchupsLoaded)return;
+  const node=$('trade-analytics-loading');
+  if(node){node.innerHTML='<span class="spinner"></span>Loading scoring archive for realized-points grades…';node.classList.remove('hidden');}
+  loadAllMatchups().then(()=>{if(node)node.classList.add('hidden');renderTrades();}).catch(()=>{if(node)node.classList.add('hidden');});
 }
 function tradeLabManagers(){return state.rosters.map(r=>{const u=state.users.find(x=>x.user_id===r.owner_id);return{ownerId:r.owner_id,rosterId:Number(r.roster_id),name:franchiseName(u,r)}}).filter(x=>x.ownerId);}
-function renderAssetPicker(side,ownerId){const el=$(`trade-lab-${side}-assets`),selected=state.tradeLabSelections[side],assets=rosterAssets(ownerId);el.innerHTML=assets.map(a=>`<label class="trade-asset-option"><input type="checkbox" data-side="${side}" data-asset-id="${escapeHtml(a.id)}" ${selected.has(a.id)?'checked':''}><span><strong>${escapeHtml(a.label)}</strong><small>${escapeHtml(a.meta)}</small></span><b>${state.marketLoaded?(a.value?Math.round(a.value).toLocaleString():'—'):'…'}</b></label>`).join('');el.querySelectorAll('input').forEach(inp=>inp.addEventListener('change',()=>{inp.checked?selected.add(inp.dataset.assetId):selected.delete(inp.dataset.assetId);renderTradeLabTotals();}));}
+function renderAssetPicker(side,ownerId){const el=$(`trade-lab-${side}-assets`),selected=state.tradeLabSelections[side],assets=rosterAssets(ownerId);el.innerHTML=assets.map(a=>`<label class="trade-asset-option"><input type="checkbox" data-side="${side}" data-asset-id="${escapeHtml(a.id)}" ${selected.has(a.id)?'checked':''}><span><strong>${escapeHtml(a.label)}${ecrBadge(a.id)}</strong><small>${escapeHtml(a.meta)}</small></span><b>${state.marketLoaded?(a.value?Math.round(a.value).toLocaleString():'—'):'…'}</b></label>`).join('');el.querySelectorAll('input').forEach(inp=>inp.addEventListener('change',()=>{inp.checked?selected.add(inp.dataset.assetId):selected.delete(inp.dataset.assetId);renderTradeLabTotals();}));}
 function selectedAssetTotal(side,ownerId){const selected=state.tradeLabSelections[side],map=new Map(rosterAssets(ownerId).map(a=>[a.id,a]));return[...selected].reduce((n,id)=>n+Number(map.get(id)?.value||0),0);}
 function selectedAssets(side,ownerId){const selected=state.tradeLabSelections[side],map=new Map(rosterAssets(ownerId).map(a=>[a.id,a]));return[...selected].map(id=>map.get(id)).filter(Boolean);}
 function assetPosition(a){return a?.type==='player'?(a.meta||'').split(' • ')[0]:null;}
-function playerAssetPool(ownerId){return rosterAssets(ownerId).filter(a=>a.type==='player').map(a=>({...a,pos:assetPosition(a)}));}
+function playerAssetPool(ownerId){
+  const cached=memo.playerPool.get(ownerId);if(cached)return cached;
+  const built=rosterAssets(ownerId).filter(a=>a.type==='player').map(a=>{const withPos={...a,pos:assetPosition(a)};return{...withPos,surplus:assetSurplus(withPos)};});
+  memo.playerPool.set(ownerId,built);
+  return built;
+}
 function postTradePlayerPool(ownerId,outSide,inSide,otherOwnerId){const outgoing=new Set(selectedAssets(outSide,ownerId).filter(a=>a.type==='player').map(a=>a.id));const incoming=selectedAssets(inSide,otherOwnerId).filter(a=>a.type==='player').map(a=>({...a,pos:assetPosition(a)}));return [...playerAssetPool(ownerId).filter(a=>!outgoing.has(a.id)),...incoming];}
-function lineupSlots(){const raw=state.league?.roster_positions||[];const slots=[];raw.forEach(x=>{if(['BN','IR','TAXI'].includes(x))return;if(x==='SUPER_FLEX')slots.push(['QB','RB','WR','TE']);else if(x==='FLEX'||x==='WRRB_FLEX')slots.push(['RB','WR','TE']);else if(x==='REC_FLEX')slots.push(['WR','TE']);else if(['QB','RB','WR','TE'].includes(x))slots.push([x]);});return slots;}
+/**
+ * Every starting slot in roster order, including ones this app does not value
+ * (K, DEF, IDP). Keeping them in the list matters because Sleeper's `starters`
+ * array is positionally aligned with roster_positions: dropping unknown slots
+ * would misalign flex detection in any league that starts a kicker.
+ */
+function startingSlotSpec(){
+  const raw=state.league?.roster_positions||[];
+  return raw.filter(x=>!['BN','IR','TAXI'].includes(x)).map(x=>{
+    if(x==='SUPER_FLEX')return{raw:x,eligible:['QB','RB','WR','TE'],flex:true};
+    if(x==='FLEX'||x==='WRRB_FLEX')return{raw:x,eligible:['RB','WR','TE'],flex:true};
+    if(x==='REC_FLEX')return{raw:x,eligible:['WR','TE'],flex:true};
+    if(['QB','RB','WR','TE'].includes(x))return{raw:x,eligible:[x],flex:false};
+    return{raw:x,eligible:null,flex:false};
+  });
+}
+function lineupSlots(){return startingSlotSpec().filter(s=>s.eligible).map(s=>s.eligible);}
+/** Total roster spots, excluding taxi and IR which sit outside the active roster. */
+function rosterLimit(){
+  const raw=state.league?.roster_positions||[];
+  const spots=raw.filter(x=>x!=='TAXI'&&x!=='IR').length;
+  return spots||null;
+}
+/** How each flex slot is actually being filled across the league right now. */
+function observedFlexUsage(){
+  const spec=startingSlotSpec(),usage={};
+  for(const roster of state.rosters||[]){
+    const starters=roster.starters||[];
+    spec.forEach((slot,i)=>{
+      if(!slot.flex)return;
+      const pid=starters[i];
+      if(!pid||String(pid)==='0')return;
+      const pos=playerInfo(pid).position;
+      if(!pos||!slot.eligible.includes(pos))return;
+      usage[pos]=(usage[pos]||0)+1;
+    });
+  }
+  return usage;
+}
+/**
+ * Replacement level per position, computed from this league's own rosters.
+ * Recomputed whenever market data or rosters change, via the memo.
+ */
+function leagueReplacementLevels(){
+  if(memo.replacement)return memo.replacement;
+  const teams=(state.rosters||[]).length||1;
+  const perTeam=starterSlotCounts(lineupSlots(),observedFlexUsage());
+  const leagueWide=Object.fromEntries(Object.entries(perTeam).map(([pos,n])=>[pos,n*teams]));
+  const pools={};
+  for(const roster of state.rosters||[]){
+    for(const id of roster.players||[]){
+      const pos=playerInfo(id).position;
+      if(!pos)continue;
+      (pools[pos]||=[]).push(marketValueForPlayer(id));
+    }
+  }
+  memo.replacement=replacementLevels(pools,leagueWide);
+  return memo.replacement;
+}
+/**
+ * Surplus over replacement for one asset. Picks are not discounted against a
+ * replacement level: they occupy no lineup slot today, so there is nothing for
+ * them to beat. That slightly favours the side receiving picks in surplus
+ * terms, which is why surplus is shown next to market balance rather than
+ * replacing it.
+ */
+function assetSurplus(asset){
+  if(!asset)return 0;
+  if(asset.type==='pick')return Number(asset.value||0);
+  const pos=asset.pos||assetPosition(asset);
+  return surplusValue(asset.value,leagueReplacementLevels()[pos]||0);
+}
 function bestLineupValue(pool){const available=pool.map(a=>({...a}));let total=0;const chosen=[];const slots=lineupSlots();const strict=slots.filter(s=>s.length===1),flex=slots.filter(s=>s.length>1);for(const slot of [...strict,...flex]){let best=-1;for(let i=0;i<available.length;i++){if(slot.includes(available[i].pos)&&(best<0||Number(available[i].value||0)>Number(available[best].value||0)))best=i;}if(best>=0){const [a]=available.splice(best,1);total+=Number(a.value||0);chosen.push(a);}}return{total,chosen};}
-function positionGroupValue(pool,pos){return pool.filter(a=>a.pos===pos).reduce((n,a)=>n+Number(a.value||0),0);}
-function rankAmong(values,target){const sorted=[...values].sort((a,b)=>b-a);return sorted.findIndex(v=>v<=target)+1||sorted.length;}
+// Room strength is measured in surplus, not raw value. Summing raw value
+// rewarded hoarding: six startable-but-replaceable RBs used to outrank an
+// elite one. Below-replacement depth now contributes nothing.
+function positionGroupValue(pool,pos){return pool.filter(a=>a.pos===pos).reduce((n,a)=>n+Number(a.surplus??assetSurplus(a)),0);}
+function assetsSurplusTotal(assets){return (assets||[]).reduce((n,a)=>n+Number(a?.surplus??assetSurplus(a)),0);}
+
 function contextForSide(ownerId,outSide,inSide,otherOwnerId){const before=playerAssetPool(ownerId),after=postTradePlayerPool(ownerId,outSide,inSide,otherOwnerId),beforeLine=bestLineupValue(before),afterLine=bestLineupValue(after);const roster=currentRosterForOwner(ownerId),beforePicks=currentDraftCapital(roster?.roster_id),outPicks=selectedAssets(outSide,ownerId).filter(a=>a.type==='pick'),inPicks=selectedAssets(inSide,otherOwnerId).filter(a=>a.type==='pick');const beforePickValue=beforePicks.reduce((n,p)=>n+Number(p.value||0),0),afterPickValue=beforePickValue-outPicks.reduce((n,p)=>n+Number(p.value||0),0)+inPicks.reduce((n,p)=>n+Number(p.value||0),0);const posChanges=['QB','RB','WR','TE'].map(pos=>{const beforeVal=positionGroupValue(before,pos),afterVal=positionGroupValue(after,pos);const leagueVals=state.rosters.map(r=>{const u=state.users.find(x=>x.user_id===r.owner_id);return positionGroupValue(playerAssetPool(u?.user_id),pos);});const otherIdx=state.rosters.findIndex(r=>r.owner_id===ownerId);const beforeRank=rankAmong(leagueVals,beforeVal);if(otherIdx>=0)leagueVals[otherIdx]=afterVal;const afterRank=rankAmong(leagueVals,afterVal);return{pos,beforeVal,afterVal,beforeRank,afterRank,delta:afterVal-beforeVal};}).sort((a,b)=>Math.abs(b.delta)-Math.abs(a.delta));return{beforeLine:beforeLine.total,afterLine:afterLine.total,lineDelta:afterLine.total-beforeLine.total,beforePickValue,afterPickValue,pickDelta:afterPickValue-beforePickValue,beforePickCount:beforePicks.length,afterPickCount:beforePicks.length-outPicks.length+inPicks.length,posChanges};}
 function fmtDelta(n){const x=Math.round(n);return `${x>0?'+':''}${x.toLocaleString()}`;}
 function tradeContextRead(name,ctx,marketEdge){const strongest=ctx.posChanges.find(x=>x.afterRank!==x.beforeRank)||ctx.posChanges[0];const contender=ctx.lineDelta>500&&ctx.pickDelta<0?'Contender move':ctx.lineDelta< -500&&ctx.pickDelta>0?'Future-focused move':ctx.pickDelta>800&&Math.abs(ctx.lineDelta)<500?'Adds flexibility':ctx.lineDelta>500?'Improves the core':'Balanced roster move';const edgeText=Math.abs(marketEdge)<=5?'market is close to even':marketEdge>0?'market value favors this side':'this side gives a little more market value';const posText=strongest&&strongest.afterRank!==strongest.beforeRank?`${strongest.pos} room moves #${strongest.beforeRank} → #${strongest.afterRank}`:`${strongest?.pos||'roster'} depth is roughly unchanged`;return `<div class="context-team"><div><span>${escapeHtml(name)}</span><strong>${escapeHtml(contender)}</strong></div><p>${escapeHtml(edgeText)}; ${escapeHtml(posText)}.</p><div class="context-metrics"><div><small>Best lineup value</small><b>${fmtDelta(ctx.lineDelta)}</b></div><div><small>Draft capital</small><b>${fmtDelta(ctx.pickDelta)}</b></div><div><small>Future picks</small><b>${ctx.beforePickCount} → ${ctx.afterPickCount}</b></div></div></div>`;}
 function renderTradeLabContext(a,b,av,bv){const el=$('trade-lab-context');if(!el)return;if(!state.tradeLabSelections.a.size&&!state.tradeLabSelections.b.size){el.innerHTML='<div class="context-empty">Build a deal to see lineup, positional depth, and draft-capital impact.</div>';return;}const aCtx=contextForSide(a,'a','b',b),bCtx=contextForSide(b,'b','a',a),avg=(av+bv)/2||1,aEdge=(bv-av)/avg*100,bEdge=-aEdge;const aName=$('trade-lab-a-name').textContent,bName=$('trade-lab-b-name').textContent;el.innerHTML=`<div class="context-head"><div><p class="eyebrow">LEAGUE CONTEXT</p><h3>What the deal changes</h3></div><small>Value-based lineup strength, not weekly projections.</small></div><div class="context-grid">${tradeContextRead(aName,aCtx,aEdge)}${tradeContextRead(bName,bCtx,bEdge)}</div>`;}
-function renderTradeLabTotals(){const a=$('trade-lab-a').value,b=$('trade-lab-b').value,av=selectedAssetTotal('a',a),bv=selectedAssetTotal('b',b);$('trade-lab-a-total').textContent=Math.round(av).toLocaleString();$('trade-lab-b-total').textContent=Math.round(bv).toLocaleString();if(!av&&!bv){$('trade-lab-verdict').innerHTML='<strong>Build a deal</strong><small>Tap assets from both rosters.</small>';renderTradeLabContext(a,b,av,bv);return;}const avg=(av+bv)/2||1,edge=(av-bv)/avg*100;const fav=edge>0?$('trade-lab-a-name').textContent:$('trade-lab-b-name').textContent;$('trade-lab-verdict').innerHTML=`<strong>${Math.abs(edge)<=5?'Near-even market':`${escapeHtml(fav)} +${Math.abs(edge).toFixed(1)}%`}</strong><div class="value-bar"><i style="width:${Math.max(5,Math.min(95,50+edge/2))}%"></i></div><small>${Math.round(av).toLocaleString()} ⇄ ${Math.round(bv).toLocaleString()} • ${gradeLetter(-Math.abs(edge))} balance</small>`;renderTradeLabContext(a,b,av,bv);}
+/**
+ * Surplus-based read of a proposed deal for one side, including the cost of the
+ * players a lopsided-count trade would force off the roster.
+ */
+function dealSurplusForSide(ownerId,outSide,inSide,otherOwnerId){
+  const outgoing=selectedAssets(outSide,ownerId);
+  const incoming=selectedAssets(inSide,otherOwnerId);
+  const gained=assetsSurplusTotal(incoming)-assetsSurplusTotal(outgoing);
+  const pool=postTradePlayerPool(ownerId,outSide,inSide,otherOwnerId);
+  const crunch=rosterCrunchCost(pool,rosterLimit());
+  return{gained,crunch,net:gained-crunch.cost,incoming,outgoing};
+}
+function dealDialsHtml(a,b,av,bv){
+  const aSide=dealSurplusForSide(a,'a','b',b),bSide=dealSurplusForSide(b,'b','a',a);
+  const aCtx=contextForSide(a,'a','b',b),bCtx=contextForSide(b,'b','a',a);
+  const aName=$('trade-lab-a-name').textContent,bName=$('trade-lab-b-name').textContent;
+  const marketEdge=edgePct(bv,av);
+  const surplusEdge=edgePct(Math.max(aSide.net,0)+1,Math.max(bSide.net,0)+1);
+  const dial=(label,left,right,note)=>`<div class="deal-dial"><small>${escapeHtml(label)}</small><div class="deal-dial-sides"><b>${left}</b><span>vs</span><b>${right}</b></div><em>${escapeHtml(note)}</em></div>`;
+  const crunchNote=(side,name)=>side.crunch.overBy
+    ?`${name} drops ${side.crunch.overBy} (−${Math.round(side.crunch.cost).toLocaleString()})`
+    :'';
+  const crunchNotes=[crunchNote(aSide,aName),crunchNote(bSide,bName)].filter(Boolean).join(' • ');
+  return `<div class="deal-dials">
+    ${dial('Market balance',fmtDelta(marketEdge==null?0:-marketEdge),fmtDelta(marketEdge==null?0:marketEdge),marketEdge==null?'nothing selected':`% of average deal value, ${Math.abs(marketEdge)<=5?'near even':'lopsided'}`)}
+    ${dial('Surplus over replacement',fmtDelta(aSide.net),fmtDelta(bSide.net),'depth below replacement counts for nothing')}
+    ${dial('Best lineup value',fmtDelta(aCtx.lineDelta),fmtDelta(bCtx.lineDelta),'market value of the optimal starting eleven')}
+    ${dial('Roster crunch',aSide.crunch.overBy?`−${Math.round(aSide.crunch.cost).toLocaleString()}`:'0',bSide.crunch.overBy?`−${Math.round(bSide.crunch.cost).toLocaleString()}`:'0',crunchNotes||'both rosters stay within the limit')}
+  </div><div class="deal-dial-legend"><span>${escapeHtml(aName)}</span><span>${escapeHtml(bName)}</span></div>`;
+}
+function renderTradeLabTotals(){const a=$('trade-lab-a').value,b=$('trade-lab-b').value,av=selectedAssetTotal('a',a),bv=selectedAssetTotal('b',b);$('trade-lab-a-total').textContent=Math.round(av).toLocaleString();$('trade-lab-b-total').textContent=Math.round(bv).toLocaleString();if(!av&&!bv){$('trade-lab-verdict').innerHTML='<strong>Build a deal</strong><small>Tap assets from both rosters.</small>';renderTradeLabContext(a,b,av,bv);return;}
+  // av is what A sends, bv is what A receives, so A's edge is (bv - av). The
+  // headline previously credited the side giving up more value.
+  const avg=(av+bv)/2||1,edge=(bv-av)/avg*100;
+  const fav=edge>0?$('trade-lab-a-name').textContent:$('trade-lab-b-name').textContent;
+  $('trade-lab-verdict').innerHTML=`<strong>${Math.abs(edge)<=5?'Near-even market':`${escapeHtml(fav)} +${Math.abs(edge).toFixed(1)}%`}</strong><div class="value-bar"><i style="width:${Math.max(5,Math.min(95,50+edge/2))}%"></i></div><small>${Math.round(av).toLocaleString()} ⇄ ${Math.round(bv).toLocaleString()} • ${gradeLetter(-Math.abs(edge))} balance</small>${dealDialsHtml(a,b,av,bv)}`;
+  renderTradeLabContext(a,b,av,bv);}
 function renderTradeLab(){
   const managers=tradeLabManagers(),opts=managers.map(x=>`<option value="${escapeHtml(x.ownerId)}">${escapeHtml(x.name)}</option>`).join('');
   const aSel=$('trade-lab-a'),bSel=$('trade-lab-b');
@@ -619,7 +1098,7 @@ async function loadTradeLab(){
   setTradeLabMarketStatus('<span class="spinner"></span>Loading player names and draft capital…');
   await Promise.all([
     loadPlayerMap(),
-    api(`/league/${CONFIG.primaryLeagueId}/traded_picks`).then(x=>{state.currentTradedPicks=Array.isArray(x)?x:[];}).catch(()=>{state.currentTradedPicks=[];})
+    api(`/league/${CONFIG.primaryLeagueId}/traded_picks`).then(x=>{state.currentTradedPicks=Array.isArray(x)?x:[];clearRosterMemo();}).catch(()=>{state.currentTradedPicks=[];clearRosterMemo();})
   ]);
   refreshTradeLabSides();
   setTradeLabMarketStatus('<span class="spinner"></span>Adding dynasty market values…');
@@ -746,24 +1225,358 @@ async function setH2HMode(mode){
 }
 
 
+// ---------------------------------------------------------------------------
+// Competitive window
+//
+// The Assistant used to match franchises purely on positional shape, which
+// would cheerfully tell a 2-7 team with the league's oldest roster to trade
+// picks for an aging WR because the shapes complemented. Every suggestion now
+// runs through a two-axis read of where each franchise actually stands:
+// strength (can you win now) and timeline (are your assets appreciating).
+// ---------------------------------------------------------------------------
+function leagueWindows(){
+  if(memo.windows)return memo.windows;
+  const managers=assistantManagers();
+  const rows=managers.map(m=>{
+    const pool=playerAssetPool(m.ownerId);
+    const roster=currentRosterForOwner(m.ownerId);
+    const settings=roster?.settings||{};
+    const wins=Number(settings.wins||0),losses=Number(settings.losses||0);
+    return{
+      ownerId:m.ownerId,
+      name:m.name,
+      lineupValue:bestLineupValue(pool).total,
+      pickValue:pickAssetPool(m.ownerId).reduce((n,p)=>n+Number(p.value||0),0),
+      age:valueWeightedAge(pool,LEAGUE_FALLBACK_AGE),
+      winPct:(wins+losses)?wins/(wins+losses):0,
+      pf:scoreSettings(settings,'fpts'),
+      gamesPlayed:wins+losses
+    };
+  });
+  const lineupValues=rows.map(r=>r.lineupValue),pickValues=rows.map(r=>r.pickValue);
+  const winPcts=rows.map(r=>r.winPct),pfs=rows.map(r=>r.pf),ages=rows.map(r=>r.age);
+  const windows=new Map();
+  for(const row of rows){
+    const lineupPct=percentileRank(lineupValues,row.lineupValue);
+    const recordPct=percentileRank(winPcts,row.winPct);
+    const pfPct=percentileRank(pfs,row.pf);
+    // Younger is more future-leaning, so the age percentile is inverted.
+    const youthPct=100-percentileRank(ages,row.age);
+    const pickPct=percentileRank(pickValues,row.pickValue);
+    const strength=strengthScore({lineupPct,recordPct,pfPct,gamesPlayed:row.gamesPlayed});
+    const timeline=timelineScore({youthPct,pickPct});
+    const quadrant=classifyWindow(strength,timeline);
+    windows.set(row.ownerId,{
+      ...row,strength,timeline,lineupPct,recordPct,pfPct,youthPct,pickPct,
+      ...quadrant,
+      directive:windowDirective(quadrant.key)
+    });
+  }
+  memo.windows=windows;return windows;
+}
+const LEAGUE_FALLBACK_AGE=26;
+function franchiseWindow(ownerId){return leagueWindows().get(ownerId)||null;}
+
+/**
+ * Score an asset against what a franchise in this window actually wants.
+ * Positive means "this fits what you should be acquiring".
+ */
+function assetWindowFit(asset,directive){
+  if(!directive)return 0;
+  if(asset?.type==='pick')return directive.preferPicks?1:-0.6;
+  const age=Number(asset?.age);
+  if(!Number.isFinite(age))return 0;
+  if(directive.preferYouth)return age<=directive.buyAgeCeiling?1:-(age-directive.buyAgeCeiling)/6;
+  return age<=directive.buyAgeCeiling?0.6:-0.5;
+}
+/** Score an asset a franchise would be sending away. Positive means "good to move on from". */
+function assetSellFit(asset,directive){
+  if(!directive)return 0;
+  if(asset?.type==='pick')return directive.preferPicks?-1:0.8;
+  const age=Number(asset?.age);
+  if(!Number.isFinite(age))return 0;
+  if(directive.sellAgeFloor!=null)return age>=directive.sellAgeFloor?1:-0.7;
+  return age<=23?0.5:-0.2;
+}
+
+function windowCardHtml(ownerId){
+  const w=franchiseWindow(ownerId);
+  if(!w)return '';
+  const bar=(label,value,left,right)=>`<div class="window-axis"><div class="window-axis-head"><small>${label}</small><b>${Math.round(value)}</b></div><div class="window-bar"><i style="width:${Math.max(2,Math.min(100,value))}%"></i></div><div class="window-axis-ends"><span>${left}</span><span>${right}</span></div></div>`;
+  const d=w.directive;
+  const moves=[
+    d.preferPicks?'Buy future picks':'Spend future picks',
+    d.preferYouth?`Target players ${d.buyAgeCeiling} and under`:`Target proven production up to ${d.buyAgeCeiling}`,
+    d.sellAgeFloor!=null?`Sell producers ${d.sellAgeFloor}+`:'Hold your producers'
+  ];
+  return `<article class="window-card window-${w.key}">
+    <div class="window-verdict"><span class="window-kicker">COMPETITIVE WINDOW</span><h3>${escapeHtml(w.label)}</h3><p>${escapeHtml(w.blurb)}</p><div class="window-moves">${moves.map(m=>`<span>${escapeHtml(m)}</span>`).join('')}</div></div>
+    <div class="window-axes">
+      ${bar('Win-now strength',w.strength,'Rebuilding','Contending')}
+      ${bar('Asset timeline',w.timeline,'Aging','Appreciating')}
+      <div class="window-facts"><div><small>Lineup value</small><b>${Math.round(w.lineupValue).toLocaleString()}</b></div><div><small>Value-weighted age</small><b>${w.age.toFixed(1)}</b></div><div><small>Future pick value</small><b>${Math.round(w.pickValue).toLocaleString()}</b></div><div><small>Record</small><b>${w.gamesPlayed?`${Math.round(w.winPct*100)}%`:'—'}</b></div></div>
+    </div>
+  </article>`;
+}
+
+// ---------------------------------------------------------------------------
+// Manager Lab: lineup efficiency, all-play, luck, coaching record, schedule swap
+//
+// All of this runs on the matchup archive that was already being downloaded and
+// only half used. `starters` and `players_points` together say not just what a
+// team scored but what it could have scored, which is the difference between a
+// scoreboard and an argument.
+// ---------------------------------------------------------------------------
+async function ensureEfficiency(){
+  if(state.efficiency)return state.efficiency;
+  if(state.efficiencyPromise)return state.efficiencyPromise;
+  state.efficiencyPromise=(async()=>{
+    await loadAllMatchups();
+    await loadPlayerMap();
+    state.efficiency=buildEfficiencyArchive();
+    return state.efficiency;
+  })().finally(()=>state.efficiencyPromise=null);
+  return state.efficiencyPromise;
+}
+function buildEfficiencyArchive(){
+  const slots=lineupSlots();
+  const teamWeeks=[],weekBuckets=new Map(),games=[];
+  const names=ownerNameMap();
+  for(const item of state.history){
+    const season=String(item.league.season);
+    const ownerByRoster=Object.fromEntries(item.rosters.map(r=>[Number(r.roster_id),r.owner_id]));
+    for(const {week,data} of item.matchups){
+      const key=`${season}|${week}`;
+      const scores=new Map(),opponents=new Map(),optimalByOwner=new Map();
+      const groups={};
+      for(const m of data){
+        const ownerId=ownerByRoster[Number(m.roster_id)];
+        if(!ownerId)continue;
+        const players=Object.entries(m.players_points||{}).map(([id,pts])=>({
+          id:String(id),points:Number(pts)||0,pos:playerInfo(id).position
+        }));
+        const row=weekEfficiency({players,startedIds:(m.starters||[]).map(String),slots});
+        teamWeeks.push({season,week,ownerId,manager:names[ownerId]||ownerId,...row});
+        scores.set(ownerId,row.actual);
+        optimalByOwner.set(ownerId,row.optimal);
+        if(m.matchup_id!=null)(groups[m.matchup_id]||=[]).push({ownerId,actual:row.actual,optimal:row.optimal});
+      }
+      for(const pair of Object.values(groups)){
+        if(pair.length!==2)continue;
+        opponents.set(pair[0].ownerId,pair[1].ownerId);
+        opponents.set(pair[1].ownerId,pair[0].ownerId);
+        games.push({season,week,a:pair[0].ownerId,b:pair[1].ownerId,aActual:pair[0].actual,bActual:pair[1].actual,aOptimal:pair[0].optimal,bOptimal:pair[1].optimal});
+      }
+      if(scores.size)weekBuckets.set(key,{season,week,scores,opponents});
+    }
+  }
+  return{teamWeeks,weeks:[...weekBuckets.values()],games,names};
+}
+function labSeasons(){
+  const seasons=[...new Set((state.efficiency?.teamWeeks||[]).map(r=>r.season))].sort((a,b)=>Number(b)-Number(a));
+  return seasons;
+}
+function labFilter(){
+  const season=state.labSeason;
+  const eff=state.efficiency;
+  if(!eff)return null;
+  const keep=r=>season==='all'||r.season===season;
+  return{
+    teamWeeks:eff.teamWeeks.filter(keep),
+    weeks:eff.weeks.filter(keep),
+    games:eff.games.filter(keep),
+    names:eff.names
+  };
+}
+function efficiencyLeaderboard(scope){
+  const rows=new Map();
+  for(const tw of scope.teamWeeks){
+    if(!(tw.optimal>0))continue;
+    const row=rows.get(tw.ownerId)||{ownerId:tw.ownerId,manager:tw.manager,actual:0,optimal:0,left:0,weeks:0,perfect:0};
+    row.actual+=tw.actual;row.optimal+=tw.optimal;row.left+=tw.left;row.weeks++;
+    if(tw.left===0)row.perfect++;
+    rows.set(tw.ownerId,row);
+  }
+  return[...rows.values()].map(r=>({...r,efficiency:r.optimal?r.actual/r.optimal:0,leftPerWeek:r.weeks?r.left/r.weeks:0}))
+    .sort((a,b)=>b.efficiency-a.efficiency);
+}
+function luckTable(scope){
+  const allPlay=accumulateAllPlay(scope.weeks.map(w=>[...w.scores.entries()].map(([ownerId,points])=>({ownerId,points}))));
+  const actual=new Map();
+  for(const g of scope.games){
+    for(const side of ['a','b']){
+      const id=g[side];
+      const row=actual.get(id)||{wins:0,losses:0,ties:0};
+      const mine=side==='a'?g.aActual:g.bActual,theirs=side==='a'?g.bActual:g.aActual;
+      if(mine>theirs)row.wins++;else if(mine<theirs)row.losses++;else row.ties++;
+      actual.set(id,row);
+    }
+  }
+  const out=[];
+  for(const [ownerId,ap] of allPlay){
+    const real=actual.get(ownerId)||{wins:0,losses:0,ties:0};
+    out.push({
+      ownerId,manager:scope.names[ownerId]||ownerId,
+      wins:real.wins,losses:real.losses,
+      allPlayWins:ap.wins,allPlayLosses:ap.losses,allPlayPct:ap.winPct,
+      expectedWins:ap.expectedWins,luck:luckIndex(real.wins,ap.expectedWins)
+    });
+  }
+  return out.sort((a,b)=>b.luck-a.luck);
+}
+function renderLab(){
+  const scope=labFilter();
+  if(!scope)return;
+  const eff=efficiencyLeaderboard(scope),luck=luckTable(scope),coaching=coachingRecord(scope.games);
+
+  $('lab-efficiency').innerHTML=eff.length?eff.map((r,i)=>`<tr><td class="rank big-rank">${i+1}</td><td><strong>${escapeHtml(r.manager)}</strong></td><td class="gold-score">${(r.efficiency*100).toFixed(1)}%</td><td>${r.left.toFixed(1)}</td><td>${r.leftPerWeek.toFixed(1)}</td><td>${r.perfect}</td><td>${r.weeks}</td></tr>`).join(''):'<tr><td colspan="7" class="empty-cell">No scored weeks in this range.</td></tr>';
+
+  const worst=[...scope.teamWeeks].sort((a,b)=>b.left-a.left).slice(0,8);
+  $('lab-blunders').innerHTML=worst.length?worst.map((r,i)=>`<div class="rank-row"><span>${i+1}</span><div><strong>${escapeHtml(r.manager)}</strong><small>${r.season} W${r.week}${r.topMiss?` • benched ${escapeHtml(playerInfo(r.topMiss.id).name)} (${r.topMiss.points.toFixed(1)})${r.topMissReplaced?` for ${escapeHtml(playerInfo(r.topMissReplaced.id).name)} (${r.topMissReplaced.points.toFixed(1)})`:''}`:''}</small></div><b>−${r.left.toFixed(1)}</b></div>`).join(''):'<div class="empty-cell">Nothing to see here.</div>';
+
+  $('lab-luck').innerHTML=luck.length?luck.map(r=>`<tr><td><strong>${escapeHtml(r.manager)}</strong></td><td>${r.wins}-${r.losses}</td><td>${r.allPlayWins}-${r.allPlayLosses}</td><td>${pct(r.allPlayPct)}</td><td>${r.expectedWins.toFixed(1)}</td><td class="${r.luck>=0?'luck-good':'luck-bad'}">${r.luck>0?'+':''}${r.luck.toFixed(1)}</td></tr>`).join(''):'<tr><td colspan="6" class="empty-cell">No completed games in this range.</td></tr>';
+
+  const coachRows=[...coaching.values()].map(r=>({...r,manager:scope.names[r.ownerId]||r.ownerId,swing:r.optimalWins-r.actualWins})).sort((a,b)=>b.swing-a.swing);
+  $('lab-coaching').innerHTML=coachRows.length?coachRows.map(r=>`<tr><td><strong>${escapeHtml(r.manager)}</strong></td><td>${r.actualWins}-${r.actualLosses}</td><td>${r.optimalWins}-${r.optimalLosses}</td><td class="${r.swing>0?'luck-bad':'luck-good'}">${r.swing>0?'+':''}${r.swing}</td><td>${r.flipped.length}</td></tr>`).join(''):'<tr><td colspan="5" class="empty-cell">No games to replay.</td></tr>';
+
+  renderScheduleSwap(scope);
+}
+function renderScheduleSwap(scope){
+  const sel=$('lab-swap-manager'),managers=[...new Set(scope.teamWeeks.map(r=>r.ownerId))].map(id=>({id,name:scope.names[id]||id})).sort((a,b)=>a.name.localeCompare(b.name));
+  const previous=sel.value;
+  sel.innerHTML=managers.map(m=>`<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)}</option>`).join('');
+  if(previous&&managers.some(m=>m.id===previous))sel.value=previous;
+  const owner=sel.value;
+  if(!owner){$('lab-swap').innerHTML='<div class="empty-cell">No managers in this range.</div>';return;}
+  const rows=managers.map(m=>({...scheduleSwap(scope.weeks,owner,m.id),name:m.name}))
+    .sort((a,b)=>b.wins-a.wins||a.losses-b.losses);
+  const own=rows.find(r=>r.scheduleOwnerId===owner);
+  $('lab-swap').innerHTML=rows.map(r=>`<div class="rank-row${r.scheduleOwnerId===owner?' swap-own':''}"><span>${r.scheduleOwnerId===owner?'★':''}</span><div><strong>${escapeHtml(r.name)}${r.scheduleOwnerId===owner?' (actual)':''}</strong><small>${r.scheduleOwnerId===owner?'the schedule you really played':`with ${escapeHtml(r.name)}'s schedule`}</small></div><b>${r.wins}-${r.losses}</b></div>`).join('');
+  $('lab-swap-note').textContent=own?`Actual record ${own.wins}-${own.losses}. Best possible schedule would have gone ${rows[0].wins}-${rows[0].losses}, worst ${rows[rows.length-1].wins}-${rows[rows.length-1].losses}.`:'';
+}
+async function loadLab(){
+  $('lab-loading').classList.remove('hidden');$('lab-content').classList.add('hidden');
+  $('lab-loading').innerHTML='<span class="spinner"></span>Replaying every lineup in league history…';
+  try{
+    await ensureEfficiency();
+    const seasons=labSeasons(),sel=$('lab-season');
+    sel.innerHTML='<option value="all">All seasons</option>'+seasons.map(s=>`<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
+    sel.value=state.labSeason;
+    renderLab();
+    $('lab-loading').classList.add('hidden');$('lab-content').classList.remove('hidden');
+  }catch(e){
+    $('lab-loading').innerHTML=`Manager Lab could not load: ${escapeHtml(e.message)}`;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// FantasyPros expert consensus
+//
+// Market values are crowd sentiment: what your leaguemate will accept.
+// Expert consensus is a different question: who is actually better. Neither
+// replaces the other, and the gap between them is the interesting part.
+// ---------------------------------------------------------------------------
+async function ensureEcr(){
+  if(state.ecr)return state.ecr;
+  if(!CONFIG.proxyBase){state.ecrError='No proxy configured. Set CONFIG.proxyBase to enable expert rankings.';return null;}
+  if(state.ecrPromise)return state.ecrPromise;
+  state.ecrPromise=(async()=>{
+    await Promise.all([loadPlayerMap(),ensureMarketData().catch(()=>false)]);
+    const season=String(state.league?.season||new Date().getFullYear());
+    const url=`${CONFIG.proxyBase.replace(/\/$/,'')}?type=dynasty&scoring=${encodeURIComponent(ecrScoring())}&position=ALL&season=${season}`;
+    const response=await fetch(url,{headers:{Accept:'application/json'}});
+    if(!response.ok)throw new Error(`proxy returned HTTP ${response.status}`);
+    const payload=await response.json();
+    const rows=payload.players||payload.rankings||[];
+    if(!Array.isArray(rows)||!rows.length)throw new Error('no rankings returned');
+    const {matched,unmatched}=matchRankings(rows,buildNameIndex(state.playerMap||{}));
+    state.ecrUnmatched=unmatched.length;
+    state.ecr=matched;
+    state.ecrError=null;
+    return matched;
+  })().catch(e=>{state.ecrError=`Expert rankings unavailable: ${e.message}`;return null;})
+    .finally(()=>state.ecrPromise=null);
+  return state.ecrPromise;
+}
+function ecrScoring(){
+  const rec=Number(state.league?.scoring_settings?.rec||0);
+  return rec>=1?'PPR':rec>0?'HALF':'STD';
+}
+function marketRankMap(){
+  const players=[];
+  for(const [id,p] of state.marketPlayers.entries()){
+    players.push({id:String(id),position:(p?.position||playerInfo(id).position||'').toUpperCase(),value:marketValueForPlayer(id)});
+  }
+  return marketPositionRanks(players);
+}
+function arbitrageRows(){
+  if(!state.ecr)return[];
+  return arbitrage({ecr:state.ecr,marketRanks:marketRankMap()});
+}
+function ecrBadge(playerId){
+  const row=state.ecr?.get(String(playerId));
+  if(!row?.positionRank)return '';
+  return `<span class="ecr-badge" title="Expert consensus">${escapeHtml(row.position)}${row.positionRank}${row.tier?` · T${row.tier}`:''}</span>`;
+}
+function arbitrageCardHtml(rows,signal,limit=6){
+  const filtered=rows.filter(r=>r.signal===signal).slice(0,limit);
+  if(!filtered.length)return '<div class="empty-cell">No meaningful disagreement at this threshold.</div>';
+  return filtered.map(r=>`<div class="arb-row"><div><strong>${escapeHtml(r.name)}</strong><small>${escapeHtml(r.position)}${r.team?` · ${escapeHtml(r.team)}`:''} • market ${escapeHtml(r.position)}${r.marketRank} vs experts ${escapeHtml(r.position)}${r.positionRank}</small></div><b class="arb-${signal}">${r.delta>0?'+':''}${r.delta}</b></div>`).join('');
+}
+function renderEcrPanel(){
+  const wrap=$('assistant-ecr');
+  if(!wrap)return;
+  if(state.ecrError){wrap.innerHTML=`<article class="panel"><div class="panel-head"><div><p class="eyebrow">EXPERT CONSENSUS</p><h2>Market vs Experts</h2></div></div><p class="assistant-note">${escapeHtml(state.ecrError)}</p></article>`;return;}
+  if(!state.ecr){wrap.innerHTML='';return;}
+  const rows=arbitrageRows();
+  const owned=rosteredPlayerIds();
+  const mine=$('assistant-manager').value;
+  const roster=new Set((currentRosterForOwner(mine)?.players||[]).map(String));
+  const yours=rows.filter(r=>roster.has(String(r.sleeperId)));
+  const available=rows.filter(r=>!owned.has(String(r.sleeperId)));
+  wrap.innerHTML=`<article class="panel"><div class="panel-head"><div><p class="eyebrow">EXPERT CONSENSUS</p><h2>Market vs Experts</h2></div><small>${state.ecr.size} ranked${state.ecrUnmatched?` • ${state.ecrUnmatched} unmatched`:''}</small></div>
+    <p class="assistant-note">Where crowd trade value and expert consensus disagree. A positive number means the experts think more of a player than the market does.</p>
+    <div class="arb-grid">
+      <div><p class="eyebrow">BUY LOW (LEAGUE-WIDE)</p>${arbitrageCardHtml(rows,'buy')}</div>
+      <div><p class="eyebrow">SELL HIGH (LEAGUE-WIDE)</p>${arbitrageCardHtml(rows,'sell')}</div>
+    </div>
+    <div class="arb-grid arb-split">
+      <div><p class="eyebrow">ON YOUR ROSTER</p>${yours.length?arbitrageCardHtml(yours,'sell',4)+arbitrageCardHtml(yours,'buy',4):'<div class="empty-cell">No flagged players on this roster.</div>'}</div>
+      <div><p class="eyebrow">UNROSTERED AND UNDERVALUED</p>${arbitrageCardHtml(available,'buy',4)}</div>
+    </div>
+    <div class="market-credit">Expert rankings by <a href="https://www.fantasypros.com" target="_blank" rel="noopener">FantasyPros</a> • market values by <a href="https://statsguyfantasy.com" target="_blank" rel="noopener">Stats Guy Fantasy</a></div>
+  </article>`;
+}
+
 function assistantManagers(){return tradeLabManagers();}
 function rosterPositionSnapshot(ownerId){
+  const cached=memo.snapshot.get(ownerId);if(cached)return cached;
+  const built=buildRosterPositionSnapshot(ownerId);
+  memo.snapshot.set(ownerId,built);
+  return built;
+}
+function buildRosterPositionSnapshot(ownerId){
   const pool=playerAssetPool(ownerId),positions=['QB','RB','WR','TE'];
   const rooms=positions.map(pos=>({pos,value:positionGroupValue(pool,pos),players:pool.filter(a=>a.pos===pos).sort((a,b)=>b.value-a.value)}));
   rooms.forEach(room=>{const leagueValues=assistantManagers().map(m=>positionGroupValue(playerAssetPool(m.ownerId),room.pos));room.rank=rankAmong(leagueValues,room.value);room.leagueSize=leagueValues.length;});
   return rooms;
 }
 function managerLabel(ownerId){return assistantManagers().find(m=>m.ownerId===ownerId)?.name||managerName(ownerUser(ownerId))||'Franchise';}
-function pickAssetPool(ownerId){const roster=currentRosterForOwner(ownerId);return roster?currentDraftCapital(roster.roster_id).map(p=>({id:`pick:${p.season}:${p.round}:mid|orig:${p.originalRoster}`,label:`${p.season} ${['','1st','2nd','3rd','4th','5th'][p.round]||`Round ${p.round}`}`,value:Number(p.value||0),type:'pick'})).sort((a,b)=>b.value-a.value):[];}
+function pickAssetPool(ownerId){const roster=currentRosterForOwner(ownerId);return roster?currentDraftCapital(roster.roster_id).map(p=>({id:`pick:${p.season}:${p.round}:mid|orig:${p.originalRoster}`,label:`${p.season} ${['','1st','2nd','3rd','4th','5th'][p.round]||`Round ${p.round}`}`,value:Number(p.value||0),surplus:Number(p.value||0),type:'pick'})).sort((a,b)=>b.value-a.value):[];}
 function balanceTradePackage(sendPlayers,receivePlayers,ownerId,partnerId){
   const send=[...sendPlayers],receive=[...receivePlayers];let sendValue=send.reduce((n,a)=>n+a.value,0),receiveValue=receive.reduce((n,a)=>n+a.value,0);
+  // Market value still decides whether a deal is *acceptable* to the other
+  // manager; surplus decides whether it is *useful*. Both are reported.
   const addPick=(fromOwner,toList,targetGap)=>{const picks=pickAssetPool(fromOwner).filter(p=>p.value>0);if(!picks.length)return null;return [...picks].sort((a,b)=>Math.abs(a.value-targetGap)-Math.abs(b.value-targetGap))[0]||null;};
   if(sendValue<receiveValue*.88){const p=addPick(ownerId,send,receiveValue-sendValue);if(p){send.push(p);sendValue+=p.value;}}
   else if(receiveValue<sendValue*.88){const p=addPick(partnerId,receive,sendValue-receiveValue);if(p){receive.push(p);receiveValue+=p.value;}}
-  return{send,receive,sendValue,receiveValue,gap:Math.abs(sendValue-receiveValue)/((sendValue+receiveValue)/2||1)*100};
+  const sendSurplus=assetsSurplusTotal(send),receiveSurplus=assetsSurplusTotal(receive);
+  return{send,receive,sendValue,receiveValue,sendSurplus,receiveSurplus,surplusDelta:receiveSurplus-sendSurplus,gap:Math.abs(sendValue-receiveValue)/((sendValue+receiveValue)/2||1)*100};
 }
 function bestTradeFramework(ownerId,partnerId,userStrength,userWeak,partnerStrength,partnerWeak){
   const mine=playerAssetPool(ownerId),theirs=playerAssetPool(partnerId);
+  const myWindow=franchiseWindow(ownerId),theirWindow=franchiseWindow(partnerId);
+  const myDirective=myWindow?.directive,theirDirective=theirWindow?.directive;
   const offers=mine.filter(a=>a.pos===userStrength&&a.value>0).sort((a,b)=>b.value-a.value);
   const targets=theirs.filter(a=>a.pos===userWeak&&a.value>0).sort((a,b)=>b.value-a.value);
   if(!offers.length||!targets.length)return null;
@@ -771,13 +1584,28 @@ function bestTradeFramework(ownerId,partnerId,userStrength,userWeak,partnerStren
   for(const target of targets.slice(0,4))for(const offer of offers.slice(0,5)){
     let pkg=balanceTradePackage([offer],[target],ownerId,partnerId);
     if(pkg.gap>18)continue;
-    const score=pkg.gap+(offer.value>target.value*1.6?15:0);
-    if(!best||score<best.score)best={...pkg,target,offer,score};
+    // A deal only closes if the assets suit both windows: the target has to be
+    // something we should be buying, and the offer something they should want.
+    const wantFit=assetWindowFit(target,myDirective);
+    const shedFit=assetSellFit(offer,myDirective);
+    const theirWantFit=assetWindowFit(offer,theirDirective);
+    const windowPenalty=-(wantFit*10+shedFit*6+theirWantFit*8);
+    // Total surplus is conserved in a straight swap, so "who gains surplus" is
+    // not a meaningful test. What is meaningful: are BOTH sides receiving a
+    // player who clears replacement at the position they need? That can be
+    // true for both at once, and it is what separates a real deal from two
+    // managers swapping bench depth.
+    const targetSurplus=assetSurplus(target),offerSurplus=assetSurplus(offer);
+    const mutual=Math.min(targetSurplus,offerSurplus);
+    const surplusBonus=-Math.min(mutual,4000)/300;
+    const score=pkg.gap+(offer.value>target.value*1.6?15:0)+windowPenalty+surplusBonus;
+    if(!best||score<best.score)best={...pkg,target,offer,score,wantFit,shedFit,theirWantFit,targetSurplus,offerSurplus,mutual};
   }
   return best;
 }
 function generateTradeSuggestions(ownerId){
   const myRooms=rosterPositionSnapshot(ownerId),myWeak=[...myRooms].sort((a,b)=>b.rank-a.rank)[0],myStrong=[...myRooms].sort((a,b)=>a.rank-b.rank)[0];
+  const myWindow=franchiseWindow(ownerId);
   const suggestions=[];
   for(const partner of assistantManagers().filter(m=>m.ownerId!==ownerId)){
     const rooms=rosterPositionSnapshot(partner.ownerId),partnerAtNeed=rooms.find(r=>r.pos===myWeak.pos),partnerNeedsMine=rooms.find(r=>r.pos===myStrong.pos);
@@ -785,12 +1613,17 @@ function generateTradeSuggestions(ownerId){
     const complementary=(myWeak.rank-partnerAtNeed.rank)+(partnerNeedsMine.rank-myStrong.rank);
     if(complementary<3)continue;
     const framework=bestTradeFramework(ownerId,partner.ownerId,myStrong.pos,myWeak.pos,partnerAtNeed.pos,partnerNeedsMine.pos);if(!framework)continue;
-    suggestions.push({partner,framework,score:complementary*10-framework.gap,myWeak,myStrong,partnerAtNeed,partnerNeedsMine});
+    // Positional shape is necessary but not sufficient. A contender and a
+    // rebuilder want opposite things, which is what actually closes deals.
+    const partnerWindow=franchiseWindow(partner.ownerId);
+    const fit=windowComplement(myWindow,partnerWindow);
+    suggestions.push({partner,partnerWindow,framework,windowFit:fit,score:complementary*10+fit*35-framework.gap,myWeak,myStrong,partnerAtNeed,partnerNeedsMine});
   }
   return suggestions.sort((a,b)=>b.score-a.score).slice(0,4);
 }
 function bestTradePartnerMatch(ownerId){
   const mine=rosterPositionSnapshot(ownerId),leagueSize=mine[0]?.leagueSize||assistantManagers().length||1;
+  const myWindow=franchiseWindow(ownerId);
   let best=null;
   for(const partner of assistantManagers().filter(m=>m.ownerId!==ownerId)){
     const theirs=rosterPositionSnapshot(partner.ownerId);
@@ -805,8 +1638,9 @@ function bestTradePartnerMatch(ownerId){
         const maxGap=Math.max(1,leagueSize-1),fit=Math.min(1,(supplyGap+needGap)/(2*maxGap));
         const balance=Math.max(0,1-Math.min(framework.gap,20)/20);
         const pickFlex=Math.min(1,(pickAssetPool(ownerId).length+pickAssetPool(partner.ownerId).length)/8);
-        const matchScore=Math.max(1,Math.min(99,Math.round(fit*45+balance*40+pickFlex*15)));
-        const candidate={partner,framework,matchScore,giveRoom,needRoom,theirNeed,theirSupply,supplyGap,needGap,fit,balance,pickFlex};
+        const windowFit=windowComplement(myWindow,franchiseWindow(partner.ownerId));
+        const matchScore=Math.max(1,Math.min(99,Math.round(fit*35+balance*30+windowFit*25+pickFlex*10)));
+        const candidate={partner,framework,matchScore,giveRoom,needRoom,theirNeed,theirSupply,supplyGap,needGap,fit,balance,pickFlex,windowFit,partnerWindow:franchiseWindow(partner.ownerId)};
         if(!best||candidate.matchScore>best.matchScore||(candidate.matchScore===best.matchScore&&framework.gap<best.framework.gap))best=candidate;
       }
     }
@@ -818,44 +1652,100 @@ function renderBestTradePartner(ownerId){
   if(!match){el.innerHTML='<div class="best-partner-empty"><span>BEST TRADE PARTNER</span><strong>No obvious matchmaking edge right now</strong><p>Your roster does not currently have a strong two-way positional fit with another franchise at a reasonable market-value range.</p></div>';return;}
   const f=match.framework,partner=match.partner.name,avg=(f.sendValue+f.receiveValue)/2||1;
   const balanceText=f.gap<=5?'Excellent value balance':f.gap<=10?'Good value balance':'Workable value balance';
-  el.innerHTML=`<article class="best-partner-card"><div class="best-partner-score"><span>MATCH SCORE</span><strong>${match.matchScore}</strong><small>/ 100</small></div><div class="best-partner-copy"><span class="best-partner-kicker">BEST TRADE PARTNER</span><h3>${escapeHtml(partner)}</h3><p><strong>${escapeHtml(name)}</strong> is stronger at ${match.giveRoom.pos} (#${match.giveRoom.rank}) while ${escapeHtml(partner)} is weaker there (#${match.theirNeed.rank}). ${escapeHtml(partner)} is stronger at ${match.needRoom.pos} (#${match.theirSupply.rank}), your #${match.needRoom.rank} room. That creates the league's cleanest two-way roster fit right now.</p><div class="best-partner-reasons"><span>${match.giveRoom.pos} surplus ↔ ${match.needRoom.pos} need</span><span>${balanceText}</span><span>${pickAssetPool(ownerId).length+pickAssetPool(match.partner.ownerId).length} combined future picks</span></div></div><div class="best-partner-framework"><small>SAMPLE FRAMEWORK</small><div>${assetListHtml(f.send)}<b>⇄</b>${assetListHtml(f.receive)}</div><span>${escapeHtml(name)} ${gradeLetter((f.receiveValue-f.sendValue)/avg*100)} · ${escapeHtml(partner)} ${gradeLetter((f.sendValue-f.receiveValue)/avg*100)}</span></div></article>`;
+  el.innerHTML=`<article class="best-partner-card"><div class="best-partner-score"><span>MATCH SCORE</span><strong>${match.matchScore}</strong><small>/ 100</small></div><div class="best-partner-copy"><span class="best-partner-kicker">BEST TRADE PARTNER</span><h3>${escapeHtml(partner)}</h3><p><strong>${escapeHtml(name)}</strong> is stronger at ${match.giveRoom.pos} (#${match.giveRoom.rank}) while ${escapeHtml(partner)} is weaker there (#${match.theirNeed.rank}). ${escapeHtml(partner)} is stronger at ${match.needRoom.pos} (#${match.theirSupply.rank}), your #${match.needRoom.rank} room. That creates the league's cleanest two-way roster fit right now.</p><div class="best-partner-reasons"><span>${match.giveRoom.pos} surplus ↔ ${match.needRoom.pos} need</span><span>${balanceText}</span><span>${escapeHtml(franchiseWindow(ownerId)?.label||'—')} ↔ ${escapeHtml(match.partnerWindow?.label||'—')}</span><span>${pickAssetPool(ownerId).length+pickAssetPool(match.partner.ownerId).length} combined future picks</span></div></div><div class="best-partner-framework"><small>SAMPLE FRAMEWORK</small><div>${assetListHtml(f.send)}<b>⇄</b>${assetListHtml(f.receive)}</div><span>${escapeHtml(name)} ${gradeLetter((f.receiveValue-f.sendValue)/avg*100)} · ${escapeHtml(partner)} ${gradeLetter((f.sendValue-f.receiveValue)/avg*100)}</span></div></article>`;
 }
 function rosteredPlayerIds(){const ids=new Set();state.rosters.forEach(r=>(r.players||[]).forEach(id=>ids.add(String(id))));return ids;}
-function marketFreeAgents(){const owned=rosteredPlayerIds(),format=dynastyFormat(),out=[];for(const [id,p] of state.marketPlayers.entries()){if(owned.has(String(id)))continue;const value=Number(p?.value?.[format]||0);if(!value)continue;out.push({id:String(id),name:p.name||playerInfo(id).name,pos:p.position||playerInfo(id).meta.split(' • ')[0],team:p.team||'',value});}return out.sort((a,b)=>b.value-a.value);}
+function marketFreeAgents(){const owned=rosteredPlayerIds(),format=dynastyFormat(),out=[];for(const [id,p] of state.marketPlayers.entries()){if(owned.has(String(id)))continue;const value=Number(p?.value?.[format]||0);if(!value)continue;const info=playerInfo(id);out.push({id:String(id),name:p.name||info.name,pos:p.position||info.position,team:p.team||'',value,age:info.age,type:'player'});}return out.sort((a,b)=>b.value-a.value);}
+// Minimum bodies a roster needs at each position to fill its strict lineup
+// slots, so the Assistant never suggests cutting the last startable QB.
+function requiredPositionCounts(){
+  const counts={};
+  lineupSlots().filter(s=>s.length===1).forEach(([pos])=>{counts[pos]=(counts[pos]||0)+1;});
+  return counts;
+}
 function cutCandidatePool(ownerId){
-  const roster=currentRosterForOwner(ownerId);if(!roster)return[];const starters=new Set((roster.starters||[]).map(String)),taxi=new Set((roster.taxi||[]).map(String)),reserve=new Set((roster.reserve||[]).map(String));
-  return (roster.players||[]).map(id=>{const p=playerInfo(id);return{id:String(id),name:p.name,pos:(p.meta||'').split(' • ')[0],meta:p.meta,value:marketValueForPlayer(id)};}).filter(a=>!starters.has(a.id)&&!taxi.has(a.id)&&!reserve.has(a.id)&&a.value>=0).sort((a,b)=>a.value-b.value);
+  const roster=currentRosterForOwner(ownerId);if(!roster)return[];
+  const starters=new Set((roster.starters||[]).map(String)),taxi=new Set((roster.taxi||[]).map(String)),reserve=new Set((roster.reserve||[]).map(String));
+  const all=(roster.players||[]).map(id=>{const p=playerInfo(id);return{id:String(id),name:p.name,pos:p.position||(p.meta||'').split(' • ')[0],meta:p.meta,value:marketValueForPlayer(id),age:p.age,yearsExp:p.yearsExp};});
+  const required=requiredPositionCounts(),held={};
+  all.forEach(a=>{held[a.pos]=(held[a.pos]||0)+1;});
+  // A 21-year-old on the bench is a stash, not a cut. Only surface one if the
+  // market says the asset is genuinely worthless.
+  const isStash=a=>a.value>0&&((a.yearsExp!=null&&a.yearsExp<=1)||(a.age!=null&&a.age<=23));
+  const isScarce=a=>required[a.pos]&&held[a.pos]<=required[a.pos];
+  return all
+    .filter(a=>!starters.has(a.id)&&!taxi.has(a.id)&&!reserve.has(a.id))
+    .filter(a=>!isStash(a)&&!isScarce(a))
+    .sort((a,b)=>a.value-b.value);
+}
+function medianValue(rows){
+  const vals=rows.map(r=>Number(r.value)||0).sort((a,b)=>a-b);
+  if(!vals.length)return 0;
+  const mid=Math.floor(vals.length/2);
+  return vals.length%2?vals[mid]:(vals[mid-1]+vals[mid])/2;
 }
 function generateFreeAgentUpgrades(ownerId){
   const cuts=cutCandidatePool(ownerId),free=marketFreeAgents(),out=[],usedCuts=new Set();
+  // Thresholds scale with the roster rather than hard-coded points, so they
+  // hold across scoring formats and value-service scales.
+  const benchMedian=medianValue(cuts);
+  const minGain=Math.max(benchMedian*0.75,1);
   for(const fa of free.slice(0,120)){
+    if(!fa.pos)continue;
     const cut=cuts.filter(c=>c.pos===fa.pos&&!usedCuts.has(c.id)).sort((a,b)=>a.value-b.value)[0];if(!cut)continue;
-    const gain=fa.value-cut.value;if(gain<300||fa.value<Math.max(650,cut.value*1.2))continue;
+    const gain=fa.value-cut.value;
+    if(gain<minGain||fa.value<cut.value*1.25)continue;
     out.push({fa,cut,gain});usedCuts.add(cut.id);if(out.length>=5)break;
   }
-  return out.sort((a,b)=>b.gain-a.gain);
+  // A rebuilding roster should see the young upgrade first even when a slightly
+  // bigger raw gain sits behind an older player.
+  const directive=franchiseWindow(ownerId)?.directive;
+  return out.sort((a,b)=>(b.gain+assetWindowFit(b.fa,directive)*benchMedian*0.4)-(a.gain+assetWindowFit(a.fa,directive)*benchMedian*0.4));
 }
 function assetListHtml(items){return items.map(a=>`<span class="assistant-asset"><strong>${escapeHtml(a.label||a.name)}</strong><small>${Math.round(a.value||0).toLocaleString()}</small></span>`).join('');}
 function renderRosterAssistant(){
   const ownerId=$('assistant-manager').value;if(!ownerId)return;const name=managerLabel(ownerId),rooms=rosterPositionSnapshot(ownerId),strong=[...rooms].sort((a,b)=>a.rank-b.rank)[0],weak=[...rooms].sort((a,b)=>b.rank-a.rank)[0];
   $('assistant-team-name').textContent=name;$('assistant-strength').textContent=`${strong.pos} · #${strong.rank}`;$('assistant-weakness').textContent=`${weak.pos} · #${weak.rank}`;
+  const win=franchiseWindow(ownerId);
+  $('assistant-window-label').textContent=win?win.label:'—';
+  $('assistant-window').innerHTML=windowCardHtml(ownerId);
   renderBestTradePartner(ownerId);
-  const trades=generateTradeSuggestions(ownerId);$('assistant-trades').innerHTML=trades.length?trades.map((x,i)=>{const f=x.framework,avg=(f.sendValue+f.receiveValue)/2||1,edge=(f.receiveValue-f.sendValue)/avg*100;return `<article class="assistant-card"><div class="assistant-card-head"><div><span>PARTNER ${i+1}</span><strong>${escapeHtml(x.partner.name)}</strong></div><b>${Math.abs(edge)<=5?'Balanced':`${Math.abs(edge).toFixed(0)}% value gap`}</b></div><p>You are #${x.myStrong.rank} at ${x.myStrong.pos} and #${x.myWeak.rank} at ${x.myWeak.pos}. ${escapeHtml(x.partner.name)} has the complementary roster shape.</p><div class="assistant-deal"><div><small>OFFER</small>${assetListHtml(f.send)}</div><span>⇄</span><div><small>TARGET</small>${assetListHtml(f.receive)}</div></div><div class="assistant-grades"><span>${escapeHtml(name)} <b>${gradeLetter((f.receiveValue-f.sendValue)/avg*100)}</b></span><span>${escapeHtml(x.partner.name)} <b>${gradeLetter((f.sendValue-f.receiveValue)/avg*100)}</b></span></div></article>`;}).join(''):'<div class="empty-cell">No strong complementary trade match found right now. That is better than manufacturing a bad trade idea.</div>';
+  renderEcrPanel();
+  const trades=generateTradeSuggestions(ownerId);$('assistant-trades').innerHTML=trades.length?trades.map((x,i)=>{const f=x.framework,avg=(f.sendValue+f.receiveValue)/2||1,edge=(f.receiveValue-f.sendValue)/avg*100;return `<article class="assistant-card"><div class="assistant-card-head"><div><span>PARTNER ${i+1}</span><strong>${escapeHtml(x.partner.name)}</strong></div><b>${Math.abs(edge)<=5?'Balanced':`${Math.abs(edge).toFixed(0)}% value gap`}</b></div><p>You are #${x.myStrong.rank} at ${x.myStrong.pos} and #${x.myWeak.rank} at ${x.myWeak.pos}. ${escapeHtml(x.partner.name)} has the complementary roster shape${x.partnerWindow?` and is ${escapeHtml(x.partnerWindow.label.toLowerCase())} to your ${escapeHtml((win?.label||'position').toLowerCase())}`:''}.</p><div class="assistant-window-tags"><span>${escapeHtml(win?.label||'—')}</span><b>⇄</b><span>${escapeHtml(x.partnerWindow?.label||'—')}</span><small>${Math.round((x.windowFit||0)*100)}% window fit</small></div><div class="assistant-deal"><div><small>OFFER</small>${assetListHtml(f.send)}</div><span>⇄</span><div><small>TARGET</small>${assetListHtml(f.receive)}</div></div><div class="assistant-grades"><span>${escapeHtml(name)} <b>${gradeLetter((f.receiveValue-f.sendValue)/avg*100)}</b></span><span>${escapeHtml(x.partner.name)} <b>${gradeLetter((f.sendValue-f.receiveValue)/avg*100)}</b></span><span class="assistant-surplus">Surplus ${fmtDelta(f.surplusDelta||0)}</span></div></article>`;}).join(''):'<div class="empty-cell">No strong complementary trade match found right now. That is better than manufacturing a bad trade idea.</div>';
   const upgrades=generateFreeAgentUpgrades(ownerId);$('assistant-free-agents').innerHTML=upgrades.length?upgrades.map(x=>`<article class="assistant-card fa-upgrade"><div class="assistant-card-head"><div><span>FREE AGENT UPGRADE</span><strong>Add ${escapeHtml(x.fa.name)}</strong></div><b>+${Math.round(x.gain).toLocaleString()}</b></div><p>${escapeHtml(x.fa.pos)}${x.fa.team?` · ${escapeHtml(x.fa.team)}`:''} is currently unrostered and carries more dynasty value than a fringe asset on this roster.</p><div class="assistant-swap"><div><small>ADD</small><strong>${escapeHtml(x.fa.name)}</strong><span>${Math.round(x.fa.value).toLocaleString()} value</span></div><div>→</div><div><small>CUT CANDIDATE</small><strong>${escapeHtml(x.cut.name)}</strong><span>${Math.round(x.cut.value).toLocaleString()} value</span></div></div></article>`).join(''):'<div class="empty-cell">No meaningful same-position free-agent upgrade clears the current threshold.</div>';
-  const cuts=cutCandidatePool(ownerId).slice(0,4);$('assistant-cuts').innerHTML=cuts.length?cuts.map((c,i)=>`<div class="cut-row"><span>${i+1}</span><div><strong>${escapeHtml(c.name)}</strong><small>${escapeHtml(c.meta||c.pos)} · bench only; starters, taxi and reserve are excluded</small></div><b>${Math.round(c.value).toLocaleString()}</b></div>`).join(''):'<div class="empty-cell">No eligible bench cut candidates found.</div>';
+  const cuts=cutCandidatePool(ownerId).slice(0,4);$('assistant-cuts').innerHTML=cuts.length?cuts.map((c,i)=>`<div class="cut-row"><span>${i+1}</span><div><strong>${escapeHtml(c.name)}</strong><small>${escapeHtml(c.meta||c.pos)} · bench only; starters, taxi, reserve, young stashes and scarce-position depth are protected</small></div><b>${Math.round(c.value).toLocaleString()}</b></div>`).join(''):'<div class="empty-cell">No eligible bench cut candidates found.</div>';
 }
 async function loadRosterAssistant(){
-  $('assistant-loading').classList.remove('hidden');$('assistant-content').classList.add('hidden');await Promise.all([ensureMarketData(),loadPlayerMap(),api(`/league/${CONFIG.primaryLeagueId}/traded_picks`).then(x=>{state.currentTradedPicks=Array.isArray(x)?x:[];}).catch(()=>{state.currentTradedPicks=[];})]).catch(()=>{});
+  $('assistant-loading').classList.remove('hidden');$('assistant-content').classList.add('hidden');await Promise.all([ensureMarketData(),loadPlayerMap(),api(`/league/${CONFIG.primaryLeagueId}/traded_picks`).then(x=>{state.currentTradedPicks=Array.isArray(x)?x:[];clearRosterMemo();}).catch(()=>{state.currentTradedPicks=[];clearRosterMemo();})]).catch(()=>{});
   const managers=assistantManagers(),sel=$('assistant-manager'),old=sel.value;sel.innerHTML=managers.map(m=>`<option value="${escapeHtml(m.ownerId)}">${escapeHtml(m.name)}</option>`).join('');if(old&&managers.some(m=>m.ownerId===old))sel.value=old;
   renderRosterAssistant();$('assistant-loading').classList.add('hidden');$('assistant-content').classList.remove('hidden');
+  if(CONFIG.proxyBase)ensureEcr().then(()=>renderEcrPanel()).catch(()=>renderEcrPanel());
 }
 
 async function ensureArchive(){if(!state.matchupsLoaded){$('h2h-loading').classList.remove('hidden');$('franchise-loading').classList.remove('hidden');$('records-loading').classList.remove('hidden');await loadAllMatchups();$('h2h-loading').classList.add('hidden');$('records-loading').classList.add('hidden');}renderH2HSelectors();renderFranchiseHall();renderTeamRecords();renderCareerRecords();renderSeasonExplorer(Number($('explorer-season').value||0));}
 
-function activateView(name){$$('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.view===name));$$('.view').forEach(v=>v.classList.toggle('active-view',v.id===`${name}-view`));}
-async function navigate(name){activateView(name);try{if(['franchises','headtohead','records','season'].includes(name))await ensureArchive();if(name==='franchises')enhanceFranchiseMarket().catch(()=>{});if(name==='trades')await loadTrades();if(name==='tradelab')await loadTradeLab();if(name==='assistant')await loadRosterAssistant();if(name==='headtohead')renderH2H();if(name==='records')await showRecordView(state.recordView);}catch(e){showError(`Historical analytics could not finish loading: ${e.message}`);}}
+function activateView(name){state.view=name;$$('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.view===name));$$('.view').forEach(v=>v.classList.toggle('active-view',v.id===`${name}-view`));}
+async function navigate(name){activateView(name);try{if(['franchises','headtohead','records','season'].includes(name))await ensureArchive();if(name==='franchises')enhanceFranchiseMarket().catch(()=>{});if(name==='trades')await loadTrades();if(name==='tradelab')await loadTradeLab();if(name==='assistant')await loadRosterAssistant();if(name==='lab')await loadLab();if(name==='headtohead')renderH2H();if(name==='records')await showRecordView(state.recordView);}catch(e){showError(`Historical analytics could not finish loading: ${e.message}`);}}
+
+// Full reload used to be location.reload(), which threw away the player
+// directory cache and every loaded season. Drop only the volatile state and
+// re-run the current view.
+async function refreshAll(){
+  state.archive=null;state.matchupsLoaded=false;state.matchupsPromise=null;
+  state.tradesBySeason.clear();state.tradePromisesBySeason.clear();
+  state.tradeGradesBySeason.clear();state.tradeGradePromises.clear();
+  state.draftResolutions.clear();state.draftResolutionSeasons.clear();
+  state.marketLoaded=false;state.marketPromise=null;state.marketPlayers.clear();state.marketPicks.clear();
+  state.currentTradedPicks=null;state.tradeRelationshipsLoaded=false;state.tradeRelationshipsPromise=null;
+  state.tradeLabRendered=false;state.pickValueWarned=false;
+  state.lineageReady=false;state.lineagePromise=null;state.lineageByTrade.clear();
+  state.efficiency=null;state.efficiencyPromise=null;state.ecr=null;state.ecrPromise=null;state.ecrError=null;
+  clearRosterMemo();
+  await load();
+  await navigate(state.view);
+}
 
 async function load(){clearError();setApiState('loading','Connecting to Sleeper');$('league-meta').textContent='Loading league...';try{state.league=await api(`/league/${CONFIG.primaryLeagueId}`);[state.users,state.rosters,state.nflState]=await Promise.all([api(`/league/${CONFIG.primaryLeagueId}/users`),api(`/league/${CONFIG.primaryLeagueId}/rosters`),api('/state/nfl').catch(()=>null)]);renderCurrentLeague();await renderCurrentWeek();stampLiveUpdate();startLiveRefresh();setApiState('','Live Sleeper data');try{await loadHistory();setApiState('','Live + history ready');$('overview-legends').innerHTML='<div class="mini-award"><span>Historical Analytics</span><strong>Ready on demand</strong><small>Open H2H, Franchises or Records to load the deep archive.</small></div>';}catch(e){showError(`Current league loaded, but history could not finish: ${e.message}`);}}catch(e){showError(`Could not load Sleeper league ${CONFIG.primaryLeagueId}: ${e.message}`);}}
 
-$$('.nav-item').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.view)));$$('[data-jump]').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.jump)));$('season-select').addEventListener('change',e=>renderStandingsSeason(Number(e.target.value)));$('explorer-season').addEventListener('change',e=>renderSeasonExplorer(Number(e.target.value)));$('franchise-select').addEventListener('change',e=>renderFranchiseProfile(e.target.value));$('trade-season').addEventListener('change',loadSelectedTradeSeason);$('trade-lab-a').addEventListener('change',()=>{state.tradeLabSelections.a.clear();refreshTradeLabSides();});$('trade-lab-b').addEventListener('change',()=>{state.tradeLabSelections.b.clear();refreshTradeLabSides();});$('assistant-manager').addEventListener('change',renderRosterAssistant);$('h2h-a').addEventListener('change',renderH2H);$('h2h-b').addEventListener('change',renderH2H);$$('.h2h-mode-tab').forEach(b=>b.addEventListener('click',()=>setH2HMode(b.dataset.h2hMode)));$('trade-partner-manager').addEventListener('change',()=>{renderTradeRelationships();hydrateSelectedTradeRelationship();});$('trade-partner-opponent').addEventListener('change',()=>{renderTradeRelationships();hydrateSelectedTradeRelationship();});$$('.record-tab').filter(b=>!b.classList.contains('h2h-mode-tab')).forEach(b=>b.addEventListener('click',()=>showRecordView(b.dataset.recordView)));$('refresh-btn').addEventListener('click',()=>location.reload());
+$$('.nav-item').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.view)));$$('[data-jump]').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.jump)));$('season-select').addEventListener('change',e=>renderStandingsSeason(Number(e.target.value)));$('explorer-season').addEventListener('change',e=>renderSeasonExplorer(Number(e.target.value)));$('franchise-select').addEventListener('change',e=>renderFranchiseProfile(e.target.value));$('trade-season').addEventListener('change',loadSelectedTradeSeason);$('trade-chain-toggle').addEventListener('click',()=>{setChainMode(!state.chainMode).catch(e=>showError(`Chain grades failed: ${e.message}`));});$('trade-lab-a').addEventListener('change',()=>{state.tradeLabSelections.a.clear();refreshTradeLabSides();});$('trade-lab-b').addEventListener('change',()=>{state.tradeLabSelections.b.clear();refreshTradeLabSides();});$('assistant-manager').addEventListener('change',renderRosterAssistant);$('lab-season').addEventListener('change',e=>{state.labSeason=e.target.value;renderLab();});$('lab-swap-manager').addEventListener('change',()=>{const scope=labFilter();if(scope)renderScheduleSwap(scope);});$('h2h-a').addEventListener('change',renderH2H);$('h2h-b').addEventListener('change',renderH2H);$$('.h2h-mode-tab').forEach(b=>b.addEventListener('click',()=>setH2HMode(b.dataset.h2hMode)));$('trade-partner-manager').addEventListener('change',()=>{renderTradeRelationships();hydrateSelectedTradeRelationship();});$('trade-partner-opponent').addEventListener('change',()=>{renderTradeRelationships();hydrateSelectedTradeRelationship();});$$('.record-tab').filter(b=>!b.classList.contains('h2h-mode-tab')).forEach(b=>b.addEventListener('click',()=>showRecordView(b.dataset.recordView)));$('refresh-btn').addEventListener('click',()=>{refreshAll().catch(e=>showError(`Refresh failed: ${e.message}`));});
 load();

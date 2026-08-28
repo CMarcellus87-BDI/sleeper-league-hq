@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800;900&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=8.3.1" />
+  <link rel="stylesheet" href="styles.css?v=8.8.0" />
 </head>
 <body>
   <div class="app-shell">
@@ -26,7 +26,7 @@
         <button class="nav-item" data-view="tradelab"><span class="nav-icon">⚖</span><span>Trade Lab</span></button>
         <button class="nav-item" data-view="assistant"><span class="nav-icon">✦</span><span>Assistant</span></button>
         <button class="nav-item" data-view="headtohead"><span class="nav-icon">⚔</span><span>H2H</span></button>
-        <button class="nav-item" data-view="records"><span class="nav-icon">↗</span><span>Records</span></button>
+        <button class="nav-item" data-view="lab"><span class="nav-icon">🔬</span><span>Manager Lab</span></button><button class="nav-item" data-view="records"><span class="nav-icon">↗</span><span>Records</span></button>
         <button class="nav-item" data-view="season"><span class="nav-icon">◫</span><span>Seasons</span></button>
       </nav>
       <div class="motto"><span class="motto-crown">♛</span><strong>Legends are drafted.<br>Dynasties are built.</strong></div>
@@ -143,6 +143,10 @@
             <article class="stat-card"><span>Biggest Deal</span><strong id="trade-biggest">—</strong><small>assets moved</small></article>
             <article class="stat-card"><span>Draft Picks Moved</span><strong id="trade-picks">—</strong><small>future + historical</small></article>
           </div>
+          <div class="chain-toolbar">
+            <button type="button" id="trade-chain-toggle" class="chain-toggle" aria-pressed="false">Follow the chain</button>
+            <small id="trade-chain-note">Off: outcomes stop when an asset is traded again. On: credit follows what each asset was later flipped for.</small>
+          </div>
           <div id="trade-analytics-loading" class="inline-status hidden"><span class="spinner"></span>Grading trades against dynasty market values…</div>
           <div id="trade-awards" class="trade-awards hidden"></div>
           <div class="market-credit">Market values by <a href="https://statsguyfantasy.com" target="_blank" rel="noopener">Stats Guy Fantasy</a> • trade-derived dynasty values • historical coverage begins Sep. 1, 2025</div>
@@ -171,12 +175,14 @@
         <div class="section-banner responsive-head"><div><p class="eyebrow gold">ROSTER ASSISTANT</p><h2>What Should I Do Next?</h2><p>Actionable dynasty ideas based on this league's actual rosters, market values, positional strengths and available free agents.</p></div><label class="select-label">Franchise<select id="assistant-manager" aria-label="Roster assistant franchise"></select></label></div>
         <div id="assistant-loading" class="inline-status hidden"><span class="spinner"></span>Analyzing roster fits and the free-agent pool…</div>
         <div id="assistant-content" class="hidden">
-          <div class="stat-grid assistant-stats"><article class="stat-card"><span>Franchise</span><strong id="assistant-team-name">—</strong><small>selected roster</small></article><article class="stat-card"><span>Strongest Room</span><strong id="assistant-strength">—</strong><small>league rank by dynasty value</small></article><article class="stat-card"><span>Biggest Need</span><strong id="assistant-weakness">—</strong><small>league rank by dynasty value</small></article></div>
+          <div class="stat-grid assistant-stats"><article class="stat-card"><span>Franchise</span><strong id="assistant-team-name">—</strong><small>selected roster</small></article><article class="stat-card"><span>Strongest Room</span><strong id="assistant-strength">—</strong><small>league rank by dynasty value</small></article><article class="stat-card"><span>Biggest Need</span><strong id="assistant-weakness">—</strong><small>league rank by dynasty value</small></article><article class="stat-card"><span>Competitive Window</span><strong id="assistant-window-label">—</strong><small>strength + asset timeline</small></article></div>
+          <div id="assistant-window" class="window-wrap"></div>
           <div id="assistant-best-partner" class="best-partner-wrap"></div>
           <div class="assistant-grid">
-            <article class="panel"><div class="panel-head"><div><p class="eyebrow">TRADE PARTNERS</p><h2>Suggested Frameworks</h2></div></div><p class="assistant-note">Only complementary roster fits with reasonably balanced market packages are shown. These are conversation starters, not commandments.</p><div id="assistant-trades" class="assistant-list"></div></article>
+            <article class="panel"><div class="panel-head"><div><p class="eyebrow">TRADE PARTNERS</p><h2>Suggested Frameworks</h2></div></div><p class="assistant-note">Ranked by positional fit, market balance and how well the two franchises’ competitive windows oppose each other. These are conversation starters, not commandments.</p><div id="assistant-trades" class="assistant-list"></div></article>
             <article class="panel"><div class="panel-head"><div><p class="eyebrow">FREE AGENCY</p><h2>Available Upgrades</h2></div></div><p class="assistant-note">Compares unrostered players with eligible bench assets at the same position. Taxi, starters and reserve are protected from cut suggestions.</p><div id="assistant-free-agents" class="assistant-list"></div></article>
           </div>
+          <div id="assistant-ecr"></div>
           <article class="panel assistant-cuts-panel"><div class="panel-head"><div><p class="eyebrow">ROSTER BUBBLE</p><h2>Cut Candidates</h2></div></div><p class="assistant-note">Lowest-value eligible bench assets. A low value is a flag to review, not an instruction to drop a player.</p><div id="assistant-cuts" class="cut-list"></div></article>
           <div class="market-credit">Current dynasty values by <a href="https://statsguyfantasy.com" target="_blank" rel="noopener">Stats Guy Fantasy</a>. Suggestions are generated from market value + league roster context.</div>
         </div>
@@ -211,6 +217,39 @@
         </div>
       </section>
 
+      <section id="lab-view" class="view">
+        <div class="section-banner responsive-head"><div><p class="eyebrow gold">THE RECEIPTS</p><h2>Manager Lab</h2><p>Every lineup this league has ever set, replayed. Who actually manages well, who has been carried by the schedule, and which losses were self-inflicted.</p></div><label class="select-label">Season<select id="lab-season" aria-label="Manager Lab season"><option value="all">All seasons</option></select></label></div>
+        <div id="lab-loading" class="inline-status hidden"><span class="spinner"></span>Replaying every lineup in league history…</div>
+        <div id="lab-content" class="hidden">
+          <article class="panel">
+            <div class="panel-head"><div><p class="eyebrow">START/SIT</p><h2>Lineup Efficiency</h2></div></div>
+            <p class="assistant-note">Points scored as a share of the best legal lineup available from the roster that week. Nobody is perfect; being close is the whole skill.</p>
+            <div class="table-wrap"><table><thead><tr><th>#</th><th>Manager</th><th>Efficiency</th><th>Points Left</th><th>Per Week</th><th>Perfect Weeks</th><th>Weeks</th></tr></thead><tbody id="lab-efficiency"></tbody></table></div>
+          </article>
+          <div class="hall-grid">
+            <article class="panel">
+              <div class="panel-head"><div><p class="eyebrow">HALL OF SHAME</p><h2>Worst Start/Sit Calls</h2></div></div>
+              <div id="lab-blunders" class="rank-list"></div>
+            </article>
+            <article class="panel">
+              <div class="panel-head"><div><p class="eyebrow">SCHEDULE ROULETTE</p><h2>Borrowed Schedules</h2></div><label class="select-label">Manager<select id="lab-swap-manager" aria-label="Schedule swap manager"></select></label></div>
+              <p class="assistant-note" id="lab-swap-note"></p>
+              <div id="lab-swap" class="rank-list"></div>
+            </article>
+          </div>
+          <article class="panel">
+            <div class="panel-head"><div><p class="eyebrow">LUCK INDEX</p><h2>All-Play vs Actual</h2></div></div>
+            <p class="assistant-note">All-play scores every team against every other team, every week. Expected wins come from that record; luck is the gap between it and reality.</p>
+            <div class="table-wrap"><table><thead><tr><th>Manager</th><th>Record</th><th>All-Play</th><th>All-Play %</th><th>Expected W</th><th>Luck</th></tr></thead><tbody id="lab-luck"></tbody></table></div>
+          </article>
+          <article class="panel">
+            <div class="panel-head"><div><p class="eyebrow">COACHING RECORD</p><h2>If Everyone Started Their Best</h2></div></div>
+            <p class="assistant-note">Every matchup replayed with both managers fielding their optimal lineup. "Games thrown" are wins that were available and left on the bench.</p>
+            <div class="table-wrap"><table><thead><tr><th>Manager</th><th>Actual</th><th>Optimal</th><th>Swing</th><th>Games Thrown</th></tr></thead><tbody id="lab-coaching"></tbody></table></div>
+          </article>
+        </div>
+      </section>
+
       <section id="records-view" class="view">
         <div class="section-banner"><div><p class="eyebrow gold">RECORD BOOK</p><h2>League Records</h2><p>The outrageous highs, humiliating lows, and individual explosions.</p></div><span class="banner-star">↗</span></div>
         <div class="records-toolbar"><div class="record-tabs"><button class="record-tab active" type="button" data-record-view="team">Team Records</button><button class="record-tab" type="button" data-record-view="player">Player Records</button></div><span id="records-status" class="pill">Archive ready</span></div>
@@ -224,9 +263,9 @@
         <div id="season-explorer-content" class="explorer-grid"><div class="loading-line"></div></div>
       </section>
 
-      <footer><span>DYNASTY OF LEGENDS</span><i>◆</i><span>POWERED BY SLEEPER DATA · BUILD v8.3.1 · ROSTER ASSISTANT</span></footer>
+      <footer><span>DYNASTY OF LEGENDS</span><i>◆</i><span>POWERED BY SLEEPER DATA · BUILD v8.8.0 · MANAGER LAB</span></footer>
     </main>
   </div>
-  <script src="app.js?v=8.3.1"></script>
+  <script type="module" src="app.js?v=8.8.0"></script>
 </body>
 </html>
