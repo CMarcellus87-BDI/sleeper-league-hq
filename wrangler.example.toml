@@ -1,0 +1,10 @@
+# Copy to wrangler.toml and edit. wrangler.toml is gitignored so your origins
+# survive upgrades. Secrets are never stored here:
+#   npx wrangler secret put FANTASYPROS_API_KEY
+
+name = "dol-fantasypros"
+main = "worker/fantasypros-proxy.js"
+compatibility_date = "2026-01-01"
+
+[vars]
+ALLOWED_ORIGINS = "https://yourdomain.example,http://localhost:8000"

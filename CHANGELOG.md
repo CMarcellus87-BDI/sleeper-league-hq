@@ -1,5 +1,47 @@
 # Changelog
 
+## v9.0.0 — the full archive
+
+### Added
+- **Playoff odds.** The remaining schedule replayed 10,000 times, sampling each
+  team's weekly score from its own distribution, resolving standings and a
+  reseeded bracket every run. Reports playoff, bye and title odds plus projected
+  wins and seed. Thin samples are shrunk toward the league average, because four
+  games is not enough to know a team's true mean and an unshrunk estimate makes
+  early-season odds wildly overconfident.
+- **Waiver and FAAB returns.** Claims were arriving in the same transaction
+  responses the trade archive already fetches and were being discarded. Now kept
+  at no extra network cost and graded on points produced in the starting lineup
+  per dollar spent, with the best pickups and biggest money burned in league
+  history.
+- **Draft retrospective.** Every resolved pick graded against what its round has
+  actually returned in this league, so a fourth-round hit is credited properly
+  against a first-round one. Biggest steals and reaches called out.
+- **Manager report card.** Lineup efficiency, all-play rate, coaching, waiver
+  return, draft value and luck, each normalised within the league and weighted.
+  Luck counts only lightly because it is not a skill, and a manager missing a
+  category scores neutral in it rather than being punished.
+- **Player dossiers.** Search any player in the archive and see every manager
+  who rostered them, what they produced for each, and every trade they appeared
+  in.
+- Manager Lab now has tabs: Efficiency & Luck, Waiver Returns, Draft
+  Retrospective, Report Card.
+- `simulation.js` and `insights.js`, both pure, with 33 new tests. Suite is now
+  116 across five modules.
+
+### Fixed
+- **`normalizeScores` scored missing data as the worst possible value.**
+  `Number(null)` is `0`, which is finite, so nulls survived the guard and a
+  manager with no waiver claims graded bottom instead of neutral. Caught by a
+  test written before the wiring.
+
+### Changed
+- **Local configuration no longer gets overwritten by upgrades.** `proxyBase`
+  and the worker origin allowlist now live in `config.local.js` and
+  `wrangler.toml`, both gitignored and both excluded from release archives.
+  `setup.ps1` creates them from the shipped examples and never overwrites an
+  existing file.
+
 ## v8.9.1 — corrected against the live FantasyPros schema
 
 Written after inspecting real premium-tier responses rather than guessing.

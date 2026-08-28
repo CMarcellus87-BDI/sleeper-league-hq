@@ -1,3 +1,7 @@
+# Local configuration — survives upgrades, never committed
+config.local.js
+wrangler.toml
+
 # Secrets — never commit these
 .env
 .env.*

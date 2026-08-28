@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800;900&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=8.9.1" />
+  <link rel="stylesheet" href="styles.css?v=9.0.0" />
 </head>
 <body>
   <div class="app-shell">
@@ -26,7 +26,7 @@
         <button class="nav-item" data-view="tradelab"><span class="nav-icon">⚖</span><span>Trade Lab</span></button>
         <button class="nav-item" data-view="assistant"><span class="nav-icon">✦</span><span>Assistant</span></button>
         <button class="nav-item" data-view="headtohead"><span class="nav-icon">⚔</span><span>H2H</span></button>
-        <button class="nav-item" data-view="lab"><span class="nav-icon">🔬</span><span>Manager Lab</span></button><button class="nav-item" data-view="records"><span class="nav-icon">↗</span><span>Records</span></button>
+        <button class="nav-item" data-view="lab"><span class="nav-icon">🔬</span><span>Manager Lab</span></button><button class="nav-item" data-view="odds"><span class="nav-icon">◎</span><span>Odds</span></button><button class="nav-item" data-view="players"><span class="nav-icon">☰</span><span>Players</span></button><button class="nav-item" data-view="records"><span class="nav-icon">↗</span><span>Records</span></button>
         <button class="nav-item" data-view="season"><span class="nav-icon">◫</span><span>Seasons</span></button>
       </nav>
       <div class="motto"><span class="motto-crown">♛</span><strong>Legends are drafted.<br>Dynasties are built.</strong></div>
@@ -222,6 +222,29 @@
         <div class="section-banner responsive-head"><div><p class="eyebrow gold">THE RECEIPTS</p><h2>Manager Lab</h2><p>Every lineup this league has ever set, replayed. Who actually manages well, who has been carried by the schedule, and which losses were self-inflicted.</p></div><label class="select-label">Season<select id="lab-season" aria-label="Manager Lab season"><option value="all">All seasons</option></select></label></div>
         <div id="lab-loading" class="inline-status hidden"><span class="spinner"></span>Replaying every lineup in league history…</div>
         <div id="lab-content" class="hidden">
+          <div class="records-toolbar">
+            <button type="button" class="record-tab lab-tab active" data-lab-tab="efficiency">Efficiency &amp; Luck</button>
+            <button type="button" class="record-tab lab-tab" data-lab-tab="waivers">Waiver Returns</button>
+            <button type="button" class="record-tab lab-tab" data-lab-tab="drafts">Draft Retrospective</button>
+            <button type="button" class="record-tab lab-tab" data-lab-tab="report">Report Card</button>
+          </div>
+          <div id="lab-tab-loading" class="inline-status hidden"></div>
+          <div id="lab-waivers-panel" class="lab-panel hidden">
+            <article class="panel"><div class="panel-head"><div><p class="eyebrow">FAAB</p><h2>Waiver Returns</h2></div></div>
+            <p class="assistant-note">Points produced in the starting lineup after each claim, against what it cost. Free claims count toward totals but are excluded from the per-dollar figure.</p>
+            <div id="lab-waivers"></div><div id="lab-waiver-extremes"></div></article>
+          </div>
+          <div id="lab-drafts-panel" class="lab-panel hidden">
+            <article class="panel"><div class="panel-head"><div><p class="eyebrow">THE DRAFT</p><h2>Retrospective</h2></div></div>
+            <p class="assistant-note">Every resolved pick graded against what that round has actually returned in this league, so a fourth-round hit is credited properly against a first-round one.</p>
+            <div id="lab-drafts"></div><div id="lab-draft-extremes"></div></article>
+          </div>
+          <div id="lab-report-panel" class="lab-panel hidden">
+            <article class="panel"><div class="panel-head"><div><p class="eyebrow">THE VERDICT</p><h2>Manager Report Card</h2></div></div>
+            <p class="assistant-note">Every category normalised within the league, then weighted. All-play and lineup efficiency carry the most; luck counts against you only lightly, because it is not a skill.</p>
+            <div id="lab-report" class="report-grid"></div></article>
+          </div>
+          <div id="lab-efficiency-panel" class="lab-panel">
           <article class="panel">
             <div class="panel-head"><div><p class="eyebrow">START/SIT</p><h2>Lineup Efficiency</h2></div></div>
             <p class="assistant-note">Points scored as a share of the best legal lineup available from the roster that week. Nobody is perfect; being close is the whole skill.</p>
@@ -248,6 +271,32 @@
             <p class="assistant-note">Every matchup replayed with both managers fielding their optimal lineup. "Games thrown" are wins that were available and left on the bench.</p>
             <div class="table-wrap"><table><thead><tr><th>Manager</th><th>Actual</th><th>Optimal</th><th>Swing</th><th>Games Thrown</th></tr></thead><tbody id="lab-coaching"></tbody></table></div>
           </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="odds-view" class="view">
+        <div class="section-banner"><div><p class="eyebrow gold">TEN THOUSAND SEASONS</p><h2>Playoff Odds</h2><p>The remaining schedule replayed ten thousand times, sampling each team's weekly score from its own distribution.</p></div></div>
+        <div id="odds-loading" class="inline-status hidden"><span class="spinner"></span>Simulating the rest of the season…</div>
+        <div id="odds-content" class="hidden">
+          <article class="panel">
+            <div class="panel-head"><div><p class="eyebrow">PROJECTED FINISH</p><h2>Odds</h2></div></div>
+            <div class="table-wrap"><table><thead><tr><th>#</th><th>Manager</th><th>Playoffs</th><th>Bye</th><th>Title</th><th>Proj. W</th><th>Proj. Seed</th></tr></thead><tbody id="odds-table"></tbody></table></div>
+            <p class="assistant-note" id="odds-note"></p>
+          </article>
+        </div>
+      </section>
+
+      <section id="players-view" class="view">
+        <div class="section-banner"><div><p class="eyebrow gold">EVERY PLAYER, EVERY WEEK</p><h2>Player Dossiers</h2><p>Who has owned a player in this league, what they produced for each manager, and every trade they appeared in.</p></div></div>
+        <div id="players-loading" class="inline-status hidden"><span class="spinner"></span>Loading the scoring archive…</div>
+        <div id="players-content" class="hidden">
+          <article class="panel">
+            <div class="panel-head"><div><p class="eyebrow">SEARCH</p><h2>Find a Player</h2></div></div>
+            <input type="search" id="player-search" class="player-search" placeholder="Start typing a name…" aria-label="Search players" />
+            <div id="player-results" class="player-results"></div>
+          </article>
+          <div id="player-detail"></div>
         </div>
       </section>
 
@@ -264,9 +313,9 @@
         <div id="season-explorer-content" class="explorer-grid"><div class="loading-line"></div></div>
       </section>
 
-      <footer><span>DYNASTY OF LEGENDS</span><i>◆</i><span>POWERED BY SLEEPER DATA · BUILD v8.9.1 · PROJECTIONS</span></footer>
+      <footer><span>DYNASTY OF LEGENDS</span><i>◆</i><span>POWERED BY SLEEPER DATA · BUILD v9.0.0 · THE FULL ARCHIVE</span></footer>
     </main>
   </div>
-  <script type="module" src="app.js?v=8.9.1"></script>
+  <script type="module" src="app.js?v=9.0.0"></script>
 </body>
 </html>

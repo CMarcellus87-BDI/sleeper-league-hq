@@ -5,6 +5,18 @@ A mobile-friendly Sleeper dynasty league archive and trade analytics dashboard.
 Default league is `1326583431680761856`. Any Sleeper league can be loaded with
 `?league=<league_id>` in the URL.
 
+## First-time setup
+
+```powershell
+./setup.ps1
+```
+
+That creates `config.local.js` and `wrangler.toml` from the shipped examples and
+never overwrites them, so upgrades leave your settings alone. Both are
+gitignored and neither is included in release archives. Edit `config.local.js`
+to point `proxyBase` at your deployed worker; leaving it empty disables expert
+rankings and projections cleanly.
+
 ## Run locally
 
 The app uses ES modules and calls remote APIs, both of which browsers block on
@@ -265,7 +277,10 @@ Leaving it empty disables the ECR features cleanly.
 | `analytics.js` | Pure scoring/grading math, imported by both app and tests |
 | `efficiency.js` | Lineup optimiser, all-play, luck, coaching record |
 | `fantasypros.js` | ECR name matching and market-vs-expert arbitrage |
+| `simulation.js` | Monte Carlo playoff odds |
+| `insights.js` | Waiver, draft and report card analytics |
 | `worker/`, `api/` | Proxy that holds the FantasyPros key |
+| `config.local.js` | Your local settings (gitignored, created by setup.ps1) |
 | `styles.css` | All styling |
 | `tests/` | `node --test` regression suite for `analytics.js` |
 

@@ -244,3 +244,28 @@
 .startsit-start{background:#16281a;color:#7fb08a;border:1px solid #2f5c3a}
 .startsit-sit{background:#2a1616;color:#c98080;border:1px solid #5c2f2f}
 .injury{color:#c98080;font-style:normal}
+
+.odds-bar{position:relative;height:16px;min-width:90px;border-radius:4px;background:#141b20;overflow:hidden}
+.odds-bar i{display:block;height:100%}
+.odds-bar span{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font:700 8px Inter,sans-serif;color:#e8eef0;text-shadow:0 1px 2px rgba(0,0,0,.8)}
+.odds-playoff{background:linear-gradient(90deg,#2f5c3a,#7fb08a)}
+.odds-bye{background:linear-gradient(90deg,#33506b,#7fa3c8)}
+.odds-title{background:linear-gradient(90deg,#806a32,#e0c36d)}
+.report-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px}
+.report-card{padding:13px;border:1px solid #2a343a;border-radius:10px;background:#0c1216}
+.report-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+.report-head span{color:#7b858a;font-size:8px;letter-spacing:.1em}
+.report-head strong{display:block;font-size:13px}
+.report-head b{color:#e0c36d;font:900 22px Cinzel,serif}
+.report-bar{margin-bottom:7px}
+.report-bar small{display:block;color:#7b858a;font-size:7px;letter-spacing:.06em;text-transform:uppercase}
+.report-bar em{float:right;margin-top:-11px;color:#8c9688;font-style:normal;font-size:7px}
+.player-search{width:100%;margin-top:10px;padding:10px 12px;border:1px solid #2b363c;border-radius:8px;background:#080d10;color:#e8eef0;font:500 12px Inter,sans-serif}
+.player-search:focus{outline:none;border-color:#806a32}
+.player-results{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:6px;margin-top:10px}
+.player-result{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border:1px solid #2b363c;border-radius:7px;background:#0d1317;color:inherit;text-align:left;cursor:pointer}
+.player-result:hover{border-color:#806a32}
+.player-result strong{display:block;font-size:10px}
+.player-result small{display:block;color:#69747a;font-size:7px}
+.player-result b{color:#8c9688;font-size:8px}
+@media(max-width:850px){.report-grid{grid-template-columns:1fr}}
