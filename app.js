@@ -44,7 +44,7 @@ const CONFIG = {
   valueApiBase: 'https://api.statsguyfantasy.com/api/v1',
   // Deployed proxy that holds the FantasyPros key. Empty disables ECR features.
   // See worker/fantasypros-proxy.js for the Cloudflare Worker, or api/ for Vercel.
-  proxyBase: ''
+  proxyBase: 'https://dol-fantasypros.workers.dev'
 };
 
 const state = {
