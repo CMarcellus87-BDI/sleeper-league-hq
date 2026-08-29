@@ -2,8 +2,14 @@
 
 A mobile-friendly Sleeper dynasty league archive and trade analytics dashboard.
 
-Default league is `1326583431680761856`. Any Sleeper league can be loaded with
-`?league=<league_id>` in the URL.
+Works with any Sleeper league. The league resolves from `?league=<league_id>`
+first so links stay shareable, then the last league opened, then the default in
+`config.local.js`.
+
+**My Leagues** (first item under Now) shows every league you have opened at
+once: record, rank, this week's matchup, and a warning wherever a lineup has
+unfilled slots. Add a league by pasting its id or its Sleeper URL, or import
+every league on your Sleeper account by username.
 
 ## First-time setup
 
@@ -36,6 +42,24 @@ npm test
 
 Tests cover `analytics.js`, which holds the pure scoring and grading math with
 no DOM or network dependencies.
+
+## Navigation
+
+Five sections, grouped by when you would open the app:
+
+| Section | Contains |
+| --- | --- |
+| **Now** | Overview, power rankings, playoff odds, standings |
+| **Team** | Assistant, franchise profiles |
+| **Trades** | Trade archive, Trade Lab |
+| **History** | Champions, head to head, records, season explorer |
+| **Lab** | Efficiency & luck, waiver returns, draft room, report card, player dossiers |
+
+Every destination has a shareable link: `#lab/lab:report` opens the report card
+directly, `#now/odds` opens playoff odds. Back and forward work as expected, and
+bare view names like `#trades` still resolve so older links keep working.
+
+The structure lives in `routing.js`. Adding a view is one line there.
 
 ## What it does
 
@@ -233,6 +257,92 @@ Leaving it empty disables the ECR features cleanly.
 
 **The API key never belongs in this repository.** See `.env.example`.
 
+## League Pulse
+
+Power rankings are built on **all-play record** rather than standings. Record
+folds in schedule luck; all-play scores every team against every other team each
+week and strips it out, which is why it carries the most weight.
+
+| Component | Weight |
+| --- | --- |
+| All-play record | 40% |
+| Recent three-week form | 25% |
+| Roster market value | 25% |
+| Lineup efficiency | 10% |
+
+Every component is displayed next to the score, so the ranking is arguable
+rather than oracular. Week-over-week movement is computed by re-running the same
+ranking with one fewer week, so there is nothing to persist and no way for
+stored history to drift out of sync with the algorithm.
+
+### Engagement signals
+
+The same view reports who is still setting lineups. This is deliberately
+conservative, because wrongly calling someone checked-out is worse than missing
+it:
+
+- An **unfilled lineup slot** is unambiguous and flags on its own.
+- **Making no moves is not evidence.** A strong roster nobody touches belongs to
+  a manager who is set, not gone. Those appear under "quiet but fine".
+- Softer signals must accumulate before anyone is surfaced.
+- The specific evidence is always shown with the conclusion.
+
+## Scoring formats
+
+Full PPR, half PPR and standard are detected from the league's own scoring
+settings and shown in the header.
+
+Most of the app is format-correct without doing anything: everything derived
+from Sleeper's `players_points` is already scored by Sleeper in the league's
+settings, which covers realized points, lineup efficiency, the trade archive and
+all historical records. Only external sources need telling.
+
+- **FantasyPros** rankings and projections are requested in the league's format.
+- **nflverse** publishes standard and PPR but not half. Half is derived exactly
+  (PPR is standard plus one point per reception) rather than approximated.
+- **TE premium** is detected and reported. No external source publishes a
+  TE-premium variant, so the Start/Sit panel names the format its projections
+  are in and how the league differs, rather than being quietly slightly wrong.
+
+## Opportunity data
+
+Usage metrics come from [nflverse](https://github.com/nflverse/nflverse-data),
+which publishes open weekly NFL data as CSV. It requires no key and carries no
+commercial restriction, unlike the ranking and value services.
+
+Two datasets are used: `player_stats` for targets, target share, air yards share
+and WOPR, and `snap_counts` for snap percentage. They are routed through the
+worker rather than fetched directly, because release-asset CORS is not
+guaranteed, the files run to several megabytes, and edge caching means a whole
+league costs one upstream fetch per day.
+
+Players are joined on `gsis_id`, which Sleeper carries and nflverse keys on, so
+this is an exact id match rather than name matching. Snap counts use a different
+id and fall back to name and week.
+
+The point of all this is that opportunity leads production. A player whose snap
+share has gone from 40% to 80% over three weeks is a different asset from one who
+has been at 60% all year, and a season average hides exactly that.
+
+## League formats
+
+- **Superflex** is detected from `roster_positions` and flows through slot
+  eligibility, replacement level (a superflex filled with quarterbacks counts as
+  a second QB slot) and the market value provider's format parameter.
+- **Kickers and defenses** fill lineup slots and are optimised like any other
+  position. They are excluded from positional analysis and trade valuation,
+  because they are lineup filler rather than dynasty assets.
+- **IDP** slots are mapped so the lineup optimiser fills them, which keeps
+  efficiency correct. Nothing else models defensive players.
+- If a league starts a slot type not in the map, efficiency is capped at 100%
+  and the count of affected weeks is reported rather than an impossible number
+  being shown.
+- **Each season is scored against its own lineup.** `roster_positions` describes
+  the league as configured today, so a league that has added or dropped slots
+  over the years would otherwise have old seasons measured against the current
+  lineup. Where a league has changed, the Manager Lab lists which seasons used
+  which configuration and notes that they are not directly comparable.
+
 ## Known limits
 
 - Market values come from [Stats Guy Fantasy](https://statsguyfantasy.com) and
@@ -279,6 +389,11 @@ Leaving it empty disables the ECR features cleanly.
 | `fantasypros.js` | ECR name matching and market-vs-expert arbitrage |
 | `simulation.js` | Monte Carlo playoff odds |
 | `insights.js` | Waiver, draft and report card analytics |
+| `usage.js` | nflverse usage metrics and Sleeper trending |
+| `pulse.js` | Power rankings and manager engagement |
+| `routing.js` | Navigation structure and hash routing |
+| `league.js` | League selection, recents and the multi-league dashboard |
+| `scoring.js` | Scoring format detection and per-format conversion |
 | `worker/`, `api/` | Proxy that holds the FantasyPros key |
 | `config.local.js` | Your local settings (gitignored, created by setup.ps1) |
 | `styles.css` | All styling |

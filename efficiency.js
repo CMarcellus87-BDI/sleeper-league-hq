@@ -77,11 +77,17 @@ export function weekEfficiency({ players = [], startedIds = [], slots = [] } = {
     .filter(p => started.has(String(p.id)) && !best.chosenIds.has(String(p.id)))
     .sort((a, b) => Number(a.points) - Number(b.points));
 
+  // If a started player fills a slot the caller did not describe, actual can
+  // exceed optimal. That means the slot map is incomplete, not that the manager
+  // beat a perfect lineup, so it is flagged rather than silently reported.
+  const modeled = best.total + 0.01 >= actual;
+
   return {
     actual,
     optimal: best.total,
+    modeled,
     left: Math.max(0, best.total - actual),
-    efficiency: best.total > 0 ? actual / best.total : null,
+    efficiency: best.total > 0 ? Math.min(1, actual / best.total) : null,
     topMiss: missed[0] || null,
     topMissReplaced: benchedFor[0] || null
   };
@@ -185,4 +191,41 @@ export function coachingRecord(games = []) {
     }
   }
   return rows;
+}
+
+/**
+ * A short label for a season's starting lineup, e.g. "1QB 2RB 2WR 1TE 1FLEX 1K".
+ * Bench, IR and taxi slots are excluded because they are not started.
+ */
+export function slotSignature(rawPositions = []) {
+  const counts = new Map();
+  for (const slot of rawPositions) {
+    if (!slot || ['BN', 'IR', 'TAXI'].includes(slot)) continue;
+    counts.set(slot, (counts.get(slot) || 0) + 1);
+  }
+  return [...counts.entries()].map(([slot, n]) => `${n}${slot}`).join(' ');
+}
+
+/**
+ * Group seasons by their lineup configuration.
+ *
+ * Leagues change their starting lineup. Scoring an old season against today's
+ * slots is simply wrong: a year that started a kicker and a defense had two
+ * more slots contributing points, and comparing its efficiency to a year
+ * without them is comparing different tests.
+ */
+export function summarizeSlotChanges(bySeason = {}) {
+  const groups = new Map();
+  for (const [season, positions] of Object.entries(bySeason)) {
+    const signature = slotSignature(positions);
+    const group = groups.get(signature) || { signature, seasons: [] };
+    group.seasons.push(String(season));
+    groups.set(signature, group);
+  }
+  const ordered = [...groups.values()].map(group => ({
+    ...group,
+    seasons: group.seasons.sort((a, b) => Number(a) - Number(b))
+  })).sort((a, b) => Number(a.seasons[0]) - Number(b.seasons[0]));
+
+  return { stable: ordered.length <= 1, groups: ordered };
 }

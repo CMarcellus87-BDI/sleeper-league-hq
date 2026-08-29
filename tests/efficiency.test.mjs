@@ -7,7 +7,9 @@ import {
   accumulateAllPlay,
   luckIndex,
   scheduleSwap,
-  coachingRecord
+  coachingRecord,
+  slotSignature,
+  summarizeSlotChanges
 } from '../efficiency.js';
 
 const SLOTS = [['QB'], ['RB'], ['RB'], ['WR'], ['WR'], ['TE'], ['RB', 'WR', 'TE']];
@@ -152,4 +154,91 @@ test('a game won on the field and on paper is not flagged', () => {
   ]);
   assert.equal(rows.get('alice').flipped.length, 0);
   assert.equal(rows.get('bob').flipped.length, 0);
+});
+
+test('an unmapped lineup slot is flagged rather than scoring above perfect', () => {
+  const players = [
+    { id: 'qb', pos: 'QB', points: 22 },
+    { id: 'k', pos: 'K', points: 11 }
+  ];
+  const broken = weekEfficiency({ players, startedIds: ['qb', 'k'], slots: [['QB']] });
+  assert.equal(broken.modeled, false, 'the kicker slot was not described');
+  assert.ok(broken.efficiency <= 1, 'efficiency is never reported above 100%');
+
+  const fixed = weekEfficiency({ players, startedIds: ['qb', 'k'], slots: [['QB'], ['K']] });
+  assert.equal(fixed.modeled, true);
+  assert.equal(fixed.actual, 33);
+  assert.equal(fixed.optimal, 33);
+  assert.equal(fixed.efficiency, 1);
+});
+
+test('kickers and defenses are optimised like any other slot', () => {
+  const players = [
+    { id: 'k1', pos: 'K', points: 4 },
+    { id: 'k2', pos: 'K', points: 13 },
+    { id: 'd1', pos: 'DEF', points: 2 },
+    { id: 'd2', pos: 'DEF', points: 17 }
+  ];
+  const best = weekEfficiency({ players, startedIds: ['k1', 'd1'], slots: [['K'], ['DEF', 'DST']] });
+  assert.equal(best.optimal, 30, 'the better kicker and defense start');
+  assert.equal(best.left, 24);
+  assert.equal(best.topMiss.id, 'd2');
+});
+
+test('a superflex slot takes a second quarterback over a flex option', () => {
+  const players = [
+    { id: 'qb1', pos: 'QB', points: 25 },
+    { id: 'qb2', pos: 'QB', points: 19 },
+    { id: 'rb1', pos: 'RB', points: 14 }
+  ];
+  const sf = weekEfficiency({
+    players,
+    startedIds: ['qb1', 'rb1'],
+    slots: [['QB'], ['QB', 'RB', 'WR', 'TE']]
+  });
+  assert.equal(sf.optimal, 44, 'both quarterbacks beat the back');
+  assert.equal(sf.topMiss.id, 'qb2');
+  assert.equal(sf.modeled, true);
+});
+
+test('a season signature describes what was actually started', () => {
+  assert.equal(
+    slotSignature(['QB', 'RB', 'RB', 'WR', 'WR', 'TE', 'FLEX', 'K', 'DEF', 'BN', 'BN', 'IR']),
+    '1QB 2RB 2WR 1TE 1FLEX 1K 1DEF'
+  );
+  assert.equal(slotSignature([]), '');
+});
+
+test('a league that never changed its lineup reads as stable', () => {
+  const summary = summarizeSlotChanges({
+    2023: ['QB', 'RB', 'WR', 'BN'],
+    2024: ['QB', 'RB', 'WR', 'BN', 'BN']
+  });
+  assert.equal(summary.stable, true, 'bench slots are not part of the signature');
+  assert.equal(summary.groups.length, 1);
+});
+
+test('dropping kicker and defense is detected as a configuration change', () => {
+  const summary = summarizeSlotChanges({
+    2022: ['QB', 'RB', 'WR', 'K', 'DEF'],
+    2023: ['QB', 'RB', 'WR', 'K', 'DEF'],
+    2024: ['QB', 'RB', 'WR'],
+    2025: ['QB', 'RB', 'WR']
+  });
+  assert.equal(summary.stable, false);
+  assert.equal(summary.groups.length, 2);
+  assert.deepEqual(summary.groups[0].seasons, ['2022', '2023']);
+  assert.deepEqual(summary.groups[1].seasons, ['2024', '2025']);
+  assert.ok(summary.groups[0].signature.includes('1K'));
+  assert.ok(!summary.groups[1].signature.includes('K'));
+});
+
+test('a league returning to an old configuration groups those seasons together', () => {
+  const summary = summarizeSlotChanges({
+    2022: ['QB', 'RB'],
+    2023: ['QB', 'RB', 'WR'],
+    2024: ['QB', 'RB']
+  });
+  assert.equal(summary.groups.length, 2);
+  assert.deepEqual(summary.groups.find(g => g.seasons.includes('2024')).seasons, ['2022', '2024']);
 });

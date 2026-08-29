@@ -1,5 +1,222 @@
 # Changelog
 
+## v10.3.1 — per-season lineup configuration
+
+### Fixed
+- **Historical seasons were scored against the current lineup, not their own.**
+  `roster_positions` describes the league as it is configured today. A league
+  that started a kicker and defense in earlier years and later dropped them had
+  those old weeks measured against today's shorter lineup, so the kicker and
+  defense points counted in the actual but had no slot in the optimal. v10.3.0
+  fixed leagues that still start K and DEF; this fixes leagues that used to.
+  Each season now uses its own `roster_positions`.
+
+### Added
+- **Lineup configuration history.** When a league has changed its starting
+  lineup, the Manager Lab lists which seasons used which configuration and notes
+  that seasons with more slots are not directly comparable to seasons with
+  fewer. That is a real limitation of the comparison, not a flaw to paper over.
+- `slotSignature` and `summarizeSlotChanges`, pure, with 4 tests including a
+  league that returns to an earlier configuration. Suite is now 194.
+
+### Notes
+- Career efficiency figures will move for anyone who played seasons with extra
+  slots. Kicker and defense slots are easy to optimise, so those years were
+  inflating the actual side of the ratio. The new numbers are lower and correct.
+
+## v10.3.0 — full lineups
+
+### Fixed
+- **Lineup efficiency was wrong in any league with a kicker or defense.**
+  Unmapped slots were dropped from the optimal lineup while their points still
+  counted in the actual, so efficiency ran above 100%. A roster starting a QB
+  for 22, a kicker for 11 and a defense for 14 scored 213% efficient. Every
+  Manager Lab efficiency figure, the points-left column, the coaching record and
+  the report card were affected in leagues with those slots.
+
+### Added
+- **Kicker, defense and IDP slot eligibility.** Analytics still cover only the
+  four positions that carry dynasty value, but every slot a league actually
+  starts is now filled by the lineup optimiser, which is what makes efficiency
+  correct. IDP is mapped for the same reason, not because anything models it.
+- **Superflex, WRRB and receiver flex** slot variants mapped explicitly rather
+  than by pattern, including `WRRB_WRT` and `IDP_FLEX`.
+- **An unmodeled-week flag.** If a league starts a slot type not in the map,
+  efficiency is capped at 100% and the Manager Lab says how many weeks were
+  affected, instead of silently reporting an impossible number.
+- Three tests covering the kicker case, kicker/defense optimisation and a
+  superflex second quarterback. Suite is now 190.
+
+### Notes
+- Superflex was already handled correctly throughout: slot eligibility,
+  empirically derived QB replacement level, and the market value provider's
+  format parameter. It now has explicit test coverage.
+
+## v10.2.0 — scoring aware
+
+Multi-league support meant leagues that are not PPR would start loading, and two
+external sources were assuming PPR.
+
+### Added
+- **Scoring format detection**, read once from the league's own settings and
+  shared by every source: full PPR, half PPR or standard. Shown in the league
+  header alongside superflex, because "how is this scored" is the first thing
+  worth confirming when you open a league that is not yours.
+- **Half PPR derived for nflverse usage.** nflverse publishes standard and PPR
+  points but not half. Half is exactly recoverable, since PPR is standard plus
+  one point per reception, so it is computed rather than approximated. A
+  half-PPR league was previously being served PPR numbers.
+- **TE premium detection.** No external source publishes a TE-premium variant,
+  so instead of being quietly slightly wrong, the Start/Sit panel now says which
+  format the projections are in and how the league differs.
+- `scoring.js`, pure, with 11 tests. Suite is now 187 across eleven modules.
+
+### Notes
+- Most of the app was already format-correct and stays untouched. Anything
+  derived from Sleeper's `players_points` is scored by Sleeper in the league's
+  own settings, so realized points, lineup efficiency, the trade archive and the
+  whole historical record needed no adjustment. Only the external sources
+  (FantasyPros rankings and projections, nflverse usage) had to be told.
+- An unusual reception value such as 0.4 maps to the nearest published variant
+  and is flagged as inexact rather than rejected.
+
+## v10.1.0 — multi-league
+
+The league was hardcoded at build time. It is now runtime state, which makes
+the app work for any Sleeper league and for several at once.
+
+### Added
+- **My Leagues**, first item in the Now section: every league you have opened,
+  with your record, rank, this week's matchup and — the actionable one — a
+  warning when a lineup has unfilled slots. Leagues needing attention sort to
+  the top.
+- **Add a league** by pasting either the raw id or the URL from the Sleeper app,
+  because the URL is what people actually copy.
+- **Import every league on a Sleeper account** by username, in one step.
+- **League switching** from the header, which resets all league-derived state
+  and reloads without a page refresh.
+- Recently opened leagues persist locally and can be individually forgotten.
+- `league.js`, pure, with 16 tests. Suite is now 175 across ten modules.
+
+### Changed
+- `CONFIG.primaryLeagueId` is now only a fallback. The live league resolves from
+  `?league=` first so links stay shareable, then the last league opened, then
+  the configured default. Existing behaviour is unchanged for anyone who has
+  only ever used one league.
+- Switching leagues keeps the Sleeper player directory, market values and
+  nflverse usage in memory, since all three are keyed to players rather than
+  leagues and are expensive to refetch. Everything league-derived is cleared,
+  including expert rankings and projections, because those depend on the
+  league's scoring settings.
+
+### Notes
+- The cross-league dashboard is a deliberately light load: four requests per
+  league and no archive crawl. Full history only loads for the league you open.
+
+## v10.0.0 — navigable
+
+Fourteen views had accumulated into a flat scrolling list where the best work
+was the hardest to find. The Report Card lived in a tab inside Manager Lab, four
+clicks from anywhere. Nothing about the analysis changed in this release; what
+changed is whether anyone can find it.
+
+### Added
+- **Five top-level sections**, grouped by when you would open the app rather
+  than by what kind of data they hold: **Now** (overview, power rankings,
+  playoff odds, standings), **Team** (assistant, franchises), **Trades**
+  (archive, trade lab), **History** (champions, head to head, records, season
+  explorer) and **Lab** (efficiency, waivers, drafts, report card, players).
+- **Sub-navigation** per section, which fits a phone without scrolling and
+  makes every destination one tap from its group.
+- **Deep links.** Every destination has a shareable hash — `#lab/lab:report`
+  opens the report card directly. Back and forward work, and a link pasted into
+  the league chat lands where it should.
+- `routing.js`, pure, with 14 tests including a round-trip assertion that every
+  destination survives being turned into a hash and parsed back. Suite is now
+  159 across eight modules.
+
+### Changed
+- Manager Lab's internal tab bar is gone. Its four panels are real destinations
+  in the Lab section instead of a second row of tabs inside one view.
+- Navigation renders from the `NAV` structure rather than hand-written markup,
+  so adding a view is a one-line change in one file.
+- Selecting a Lab panel updates the URL without adding a history entry, so the
+  back button leaves the section rather than stepping through tabs.
+- The shell paints from the URL immediately on load, so a deep link shows the
+  right view while its data is still arriving rather than after.
+
+### Notes
+- Old bare links like `#trades` still resolve, and an unrecognised hash falls
+  back to the overview rather than leaving a blank screen. Both are tested.
+
+## v9.2.0 — League Pulse
+
+### Added
+- **Power rankings** built on all-play record rather than standings, so schedule
+  luck does not decide who looks strong. Weighted: all-play 40%, recent
+  three-week form 25%, roster market value 25%, lineup efficiency 10%. Every
+  component is shown alongside the score so the ranking can be argued with.
+- **Week-over-week movement**, computed by re-running the same ranking with one
+  fewer week rather than storing snapshots. Nothing to persist and no way for
+  history to drift out of sync with the algorithm.
+- **Manager engagement**, grouped as "worth a nudge", "quiet but fine" and
+  "fully engaged", with the specific evidence listed under each name.
+- `pulse.js`, pure, with 16 tests. Suite is now 145 across seven modules.
+
+### Notes on the engagement feature
+This one describes what the data shows, not what a manager intends, and it is
+built to avoid accusing people wrongly:
+
+- An **unfilled lineup slot** is unambiguous and flags on its own.
+- **Making no moves is not evidence of anything.** A strong roster that never
+  gets touched belongs to someone who is set, not someone who is gone. A quiet
+  manager with good lineups is shown under "quiet but fine" and never flagged.
+- Softer signals — zero-scoring starters, low recent efficiency, a long gap
+  since the last transaction — must **accumulate** before anyone is surfaced.
+- The reasons are always displayed with the conclusion, so a manager can point
+  at the specific week and explain it.
+
+### Changed
+- The efficiency archive now records empty lineup slots and zero-scoring
+  starters per team-week, which is what the engagement signals read.
+- Power score renormalises around missing components, so a league with no market
+  value data still ranks sensibly instead of everyone scoring zero on roster
+  strength.
+
+## v9.1.0 — opportunity data
+
+### Added
+- **nflverse weekly usage**, free and open, routed through the worker for
+  caching and column filtering: snap share, target share, air yards share and
+  WOPR. Player dossiers now show recent form against everything earlier, so a
+  role change is visible instead of buried in a season average.
+- **Role growing / role shrinking** in the Assistant. Usage leads production
+  rather than following it, so a snap share climbing from 40% to 80% is a signal
+  the market has not priced yet.
+- **Sleeper trending adds and drops**, cross-referenced against this league.
+  "Added in 40,000 leagues today" is only actionable if he is free here, and
+  players already rostered are shown separately with their owner named, because
+  knowing a leaguemate holds a riser matters too.
+- `usage.js`, pure, with 13 tests covering CSV parsing, the NA marker, snap
+  merging, trend windows and signal thresholds. Suite is now 129 across six
+  modules.
+
+### Changed
+- `gsis_id` restored to the slimmed player card. It is the exact join key
+  nflverse uses, and one field buys exact id matching instead of name matching.
+- The worker serves nflverse datasets without requiring an API key, since it is
+  open data, and caches them for twelve hours so a whole league costs one
+  upstream fetch.
+
+### Notes
+- nflverse marks missing values `NA`. Read naively that becomes zero, which
+  would report a player with unknown target share as having none. Parsed as null
+  and excluded from averages instead.
+- Snap counts are a separate nflverse release. If it has not published yet, the
+  app degrades to target share alone rather than failing.
+- Rising-usage thresholds require both a real change and a real current role: a
+  jump from 5% to 15% of snaps is noise, 45% to 75% is a story.
+
 ## v9.0.0 — the full archive
 
 ### Added

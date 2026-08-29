@@ -19,21 +19,61 @@ import {
   surplusValue,
   rosterCrunchCost,
   realizedSettledShare
-} from './analytics.js?v=9.0.0';
+} from './analytics.js?v=10.3.1';
 import {
   optimalLineup,
   weekEfficiency,
+  summarizeSlotChanges,
   accumulateAllPlay,
   luckIndex,
   scheduleSwap,
   coachingRecord
-} from './efficiency.js?v=9.0.0';
+} from './efficiency.js?v=10.3.1';
+import {
+  detectScoringFormat,
+  describeScoring,
+  nflversePoints,
+  formatMatchesSource
+} from './scoring.js?v=10.3.1';
+import {
+  parseLeagueInput,
+  isValidLeagueId,
+  normalizeUsername,
+  upsertRecentLeague,
+  removeRecentLeague,
+  summarizeLeagueForUser,
+  sortLeagueSummaries,
+  aggregateLeagueSummaries
+} from './league.js?v=10.3.1';
+import {
+  NAV,
+  DEFAULT_ROUTE,
+  routeId,
+  parseRoute,
+  resolveRoute,
+  routeHash,
+  itemsForGroup
+} from './routing.js?v=10.3.1';
+import {
+  powerRankings,
+  managerActivity,
+  countEmptySlots,
+  countZeroStarters
+} from './pulse.js?v=10.3.1';
+import {
+  aggregateUsage,
+  mergeSnapCounts,
+  usageTrend,
+  risingUsage,
+  fadingUsage,
+  crossReferenceTrending
+} from './usage.js?v=10.3.1';
 import {
   makeRng,
   scoringProfile,
   leagueScoringProfile,
   simulatePlayoffOdds
-} from './simulation.js?v=9.0.0';
+} from './simulation.js?v=10.3.1';
 import {
   waiverLeaderboard,
   waiverExtremes,
@@ -42,7 +82,7 @@ import {
   draftLeaderboard,
   reportCard,
   summarizeStints
-} from './insights.js?v=9.0.0';
+} from './insights.js?v=10.3.1';
 import {
   buildNameIndex,
   matchRankings,
@@ -52,7 +92,7 @@ import {
   arbitrageThresholds,
   matchProjections,
   startSitAdvice
-} from './fantasypros.js?v=9.0.0';
+} from './fantasypros.js?v=10.3.1';
 
 // Optional local overrides. `config.local.js` is gitignored and excluded from
 // release archives, so settings survive upgrades and never reach the repo.
@@ -61,12 +101,16 @@ let LOCAL = {};
 try { LOCAL = (await import('./config.local.js')).default || {}; } catch { LOCAL = {}; }
 
 const CONFIG = {
-  primaryLeagueId: new URLSearchParams(location.search).get('league') || LOCAL.primaryLeagueId || '1326583431680761856',
+  // Only a fallback now. The live value is state.leagueId, resolved at boot
+  // from the URL, then the last league opened, then this.
+  primaryLeagueId: LOCAL.primaryLeagueId || '1326583431680761856',
+  recentLeaguesKey: 'dol-recent-leagues-v1',
+  lastLeagueKey: 'dol-last-league-v1',
   apiBase: 'https://api.sleeper.app/v1',
   maxHistorySeasons: 20,
   maxWeeksPerSeason: 18,
   matchupConcurrency: 4,
-  version: '9.0.0',
+  version: '10.3.1-lineups',
   valueApiBase: 'https://api.statsguyfantasy.com/api/v1',
   // Deployed proxy that holds the FantasyPros key. Empty disables ECR features.
   // See worker/fantasypros-proxy.js for the Cloudflare Worker, or api/ for Vercel.
@@ -128,6 +172,20 @@ const state = {
   labTab: 'efficiency',
   playerQuery: '',
   selectedPlayer: null,
+  usage: null,
+  usagePromise: null,
+  usageError: null,
+  usageByGsis: null,
+  trending: null,
+  trendingPromise: null,
+  pulseSeason: null,
+  route: {...DEFAULT_ROUTE},
+  leagueId: null,
+  recentLeagues: [],
+  leagueSummaries: null,
+  leagueSummariesPromise: null,
+  sleeperUser: null,
+  leaguesMessage: null,
   chainMode: false,
   lineageReady: false,
   lineagePromise: null,
@@ -265,7 +323,10 @@ function standingsRowsHtml(rows, detailed=true) {
 
 function renderCurrentLeague() {
   const item={league:state.league,users:state.users,rosters:state.rosters}; const rows=rosterTable(item); const status=String(state.league.status||'unknown').replaceAll('_',' ');
-  $('league-meta').textContent=`${state.league.season} • ${state.league.total_rosters} franchises • ${status}`;
+  // Say the detected format out loud. When someone loads a league that is not
+  // theirs, "how is this scored" is the first thing worth confirming.
+  const format=leagueScoringFormat();
+  $('league-meta').textContent=`${state.league.season} • ${state.league.total_rosters} franchises • ${describeScoring(format)}${dynastyFormat()==='sf_dynasty'?' • Superflex':''} • ${status}`;
   $('stat-season').textContent=state.league.season||'—'; $('stat-status').textContent=status; $('stat-teams').textContent=state.league.total_rosters||rows.length;
   const leader=rows[0], points=[...rows].sort((a,b)=>b.pf-a.pf)[0];
   $('stat-leader').textContent=leader?.franchise||'—'; $('stat-leader-detail').textContent=leader?`${leader.wins}-${leader.losses} • ${leader.pf.toFixed(2)} PF`:'—';
@@ -279,7 +340,7 @@ function homeDisplayWeek(){
 
 async function renderCurrentWeek() {
   const week = homeDisplayWeek(); $('stat-week').textContent=`Week ${week}`; $('matchup-week-title').textContent=`Week ${week} Matchups`;
-  const rows=await api(`/league/${CONFIG.primaryLeagueId}/matchups/${week}`).catch(()=>[]); const users=Object.fromEntries(state.users.map(u=>[u.user_id,u])); const rosters=Object.fromEntries(state.rosters.map(r=>[Number(r.roster_id),r]));
+  const rows=await api(`/league/${state.leagueId}/matchups/${week}`).catch(()=>[]); const users=Object.fromEntries(state.users.map(u=>[u.user_id,u])); const rosters=Object.fromEntries(state.rosters.map(r=>[Number(r.roster_id),r]));
   const groups={}; rows.forEach(m=>{ if(m.matchup_id!=null)(groups[m.matchup_id]||=[]).push(m); });
   const games=Object.values(groups).filter(g=>g.length===2).map(pair=>pair.map(m=>{const r=rosters[Number(m.roster_id)],u=r?users[r.owner_id]:null;return {name:franchiseName(u,r),score:Number(m.points||0)};}));
   $('current-matchups').innerHTML=games.length?games.map(pair=>`<div class="matchup-card"><div><strong>${escapeHtml(pair[0].name)}</strong><b>${pair[0].score.toFixed(2)}</b></div><span>VS</span><div><strong>${escapeHtml(pair[1].name)}</strong><b>${pair[1].score.toFixed(2)}</b></div></div>`).join(''):'<div class="empty-cell">No matchup data available for the current week.</div>';
@@ -399,6 +460,8 @@ function slimPlayerCard(p){
   if(p.age!=null)card.age=Number(p.age);
   if(p.years_exp!=null)card.years_exp=Number(p.years_exp);
   if(p.injury_status)card.injury_status=p.injury_status;
+  // The nflverse join key. Exact ids beat name matching, and it costs one field.
+  if(p.gsis_id)card.gsis_id=p.gsis_id;
   return card;
 }
 function mergePlayerCards(cards={}){
@@ -437,7 +500,7 @@ async function loadPlayerMap(){
   })().finally(()=>state.playerMapPromise=null);
   return state.playerMapPromise;
 }
-function playerInfo(id){const key=String(id),p=state.playerMap?.[key],m=state.marketPlayers.get(key);if(!p&&!m)return{name:`Player ${key}`,meta:'',position:'',age:null,yearsExp:null};return{name:p?.full_name||[p?.first_name,p?.last_name].filter(Boolean).join(' ')||m?.name||`Player ${key}`,meta:[p?.position||m?.position,p?.team||m?.team].filter(Boolean).join(' • '),position:p?.position||m?.position||'',age:p?.age??null,yearsExp:p?.years_exp??null};};
+function playerInfo(id){const key=String(id),p=state.playerMap?.[key],m=state.marketPlayers.get(key);if(!p&&!m)return{name:`Player ${key}`,meta:'',position:'',age:null,yearsExp:null,gsisId:null};return{name:p?.full_name||[p?.first_name,p?.last_name].filter(Boolean).join(' ')||m?.name||`Player ${key}`,meta:[p?.position||m?.position,p?.team||m?.team].filter(Boolean).join(' • '),position:p?.position||m?.position||'',age:p?.age??null,yearsExp:p?.years_exp??null,gsisId:p?.gsis_id||null,injuryStatus:p?.injury_status||null};};
 function renderPlayerRecords(){const games=[...(state.archive?.playerGames||[])].filter(g=>g.points>0).sort((a,b)=>b.points-a.points).slice(0,50);$('player-records').innerHTML=games.length?games.map((g,i)=>{const p=playerInfo(g.playerId);return`<tr><td class="rank big-rank">${i+1}</td><td class="team-cell"><strong>${escapeHtml(p.name)}</strong><span>${escapeHtml(p.meta)}</span></td><td class="gold-score">${g.points.toFixed(2)}</td><td>${g.season}</td><td>${g.week}</td><td>${escapeHtml(g.manager)}</td></tr>`;}).join(''):'<tr><td colspan="6" class="empty-cell">No player scoring data found in the matchup archive.</td></tr>';}
 
 async function showRecordView(view){state.recordView=view;$$('.record-tab').forEach(b=>b.classList.toggle('active',b.dataset.recordView===view));$$('.record-panel').forEach(p=>p.classList.add('hidden'));$(`${view}-records-panel`).classList.remove('hidden');if(view==='player'){ $('records-loading').classList.remove('hidden');$('records-status').textContent='Loading players';await loadPlayerMap();renderPlayerRecords();$('records-loading').classList.add('hidden');$('records-status').textContent='Archive loaded';}}
@@ -1013,17 +1076,47 @@ function postTradePlayerPool(ownerId,outSide,inSide,otherOwnerId){const outgoing
  * array is positionally aligned with roster_positions: dropping unknown slots
  * would misalign flex detection in any league that starts a kicker.
  */
-function startingSlotSpec(){
-  const raw=state.league?.roster_positions||[];
+// Slot eligibility, including the ones this app does no analytics on.
+//
+// A slot left unmapped is dropped from the optimal lineup while its points
+// still count in the actual, which produces efficiency above 100%. Kickers and
+// defenses are common enough that this was a real error; IDP slots are mapped
+// for the same reason even though nothing else here models defensive players.
+const SLOT_ELIGIBILITY={
+  SUPER_FLEX:['QB','RB','WR','TE'],
+  FLEX:['RB','WR','TE'],
+  WRRB_FLEX:['RB','WR'],
+  WRRB_WRT:['RB','WR','TE'],
+  REC_FLEX:['WR','TE'],
+  IDP_FLEX:['DL','LB','DB','DE','DT','CB','S'],
+  K:['K'],
+  DEF:['DEF','DST'],
+  DST:['DEF','DST'],
+  DL:['DL','DE','DT'],
+  LB:['LB'],
+  DB:['DB','CB','S'],
+  DE:['DE','DL'],
+  DT:['DT','DL'],
+  CB:['CB','DB'],
+  S:['S','DB']
+};
+const FLEX_SLOTS=new Set(['SUPER_FLEX','FLEX','WRRB_FLEX','WRRB_WRT','REC_FLEX','IDP_FLEX']);
+function slotSpecFrom(rosterPositions=[]){
+  const raw=rosterPositions||[];
   return raw.filter(x=>!['BN','IR','TAXI'].includes(x)).map(x=>{
-    if(x==='SUPER_FLEX')return{raw:x,eligible:['QB','RB','WR','TE'],flex:true};
-    if(x==='FLEX'||x==='WRRB_FLEX')return{raw:x,eligible:['RB','WR','TE'],flex:true};
-    if(x==='REC_FLEX')return{raw:x,eligible:['WR','TE'],flex:true};
+    if(SLOT_ELIGIBILITY[x])return{raw:x,eligible:SLOT_ELIGIBILITY[x],flex:FLEX_SLOTS.has(x)};
     if(['QB','RB','WR','TE'].includes(x))return{raw:x,eligible:[x],flex:false};
     return{raw:x,eligible:null,flex:false};
   });
 }
-function lineupSlots(){return startingSlotSpec().filter(s=>s.eligible).map(s=>s.eligible);}
+function startingSlotSpec(){return slotSpecFrom(state.league?.roster_positions||[]);}
+/**
+ * Slots for one specific season. Leagues change their lineup, and scoring an
+ * old season against today's configuration is wrong: a year that started a
+ * kicker and a defense had two more slots contributing points.
+ */
+function lineupSlotsFrom(rosterPositions){return slotSpecFrom(rosterPositions).filter(s=>s.eligible).map(s=>s.eligible);}
+function lineupSlots(){return lineupSlotsFrom(state.league?.roster_positions||[]);}
 /** Total roster spots, excluding taxi and IR which sit outside the active roster. */
 function rosterLimit(){
   const raw=state.league?.roster_positions||[];
@@ -1146,7 +1239,7 @@ async function loadTradeLab(){
   setTradeLabMarketStatus('<span class="spinner"></span>Loading player names and draft capital…');
   await Promise.all([
     loadPlayerMap(),
-    api(`/league/${CONFIG.primaryLeagueId}/traded_picks`).then(x=>{state.currentTradedPicks=Array.isArray(x)?x:[];clearRosterMemo();}).catch(()=>{state.currentTradedPicks=[];clearRosterMemo();})
+    api(`/league/${state.leagueId}/traded_picks`).then(x=>{state.currentTradedPicks=Array.isArray(x)?x:[];clearRosterMemo();}).catch(()=>{state.currentTradedPicks=[];clearRosterMemo();})
   ]);
   refreshTradeLabSides();
   setTradeLabMarketStatus('<span class="spinner"></span>Adding dynasty market values…');
@@ -1376,6 +1469,221 @@ function windowCardHtml(ownerId){
 // scoreboard and an argument.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// League Pulse: power rankings and manager engagement
+// ---------------------------------------------------------------------------
+function pulseSeasonKey(){return state.pulseSeason||String(state.league?.season||'');}
+function pulseWeekScores(){
+  const season=pulseSeasonKey();
+  const weeks=(state.efficiency?.weeks||[]).filter(w=>w.season===season).sort((a,b)=>a.week-b.week);
+  return weeks.map(w=>[...w.scores.entries()].map(([ownerId,points])=>({ownerId,points})));
+}
+function lastTransactionWeeks(){
+  const season=pulseSeasonKey();
+  const last=new Map();
+  const note=(ownerId,week)=>{
+    if(!ownerId||week==null)return;
+    const current=last.get(ownerId);
+    if(current==null||week>current)last.set(ownerId,week);
+  };
+  for(const claim of state.waiversBySeason.get(season)||[]){
+    note(tradeOwnerId(claim.item,claim.rosterId),claim.leg);
+  }
+  for(const trade of state.tradesBySeason.get(season)||[]){
+    for(const rid of trade.roster_ids||[])note(tradeOwnerId(trade.item,rid),Number(trade.leg)||null);
+  }
+  return last;
+}
+function renderPulse(){
+  const season=pulseSeasonKey();
+  const weekScores=pulseWeekScores();
+  if(!weekScores.length){
+    $('pulse-rankings').innerHTML='<tr><td colspan="7" class="empty-cell">No scored weeks in this season yet.</td></tr>';
+    $('pulse-activity').innerHTML='<div class="empty-cell">Nothing to report until games are played.</div>';
+    return;
+  }
+  const names=ownerNameMap();
+  const rosterStrength=new Map(),efficiencyMap=new Map();
+  for(const roster of state.rosters||[]){
+    if(!roster.owner_id)continue;
+    rosterStrength.set(roster.owner_id,bestLineupValue(playerAssetPool(roster.owner_id)).total);
+  }
+  const seasonWeeks=(state.efficiency?.teamWeeks||[]).filter(r=>r.season===season);
+  const effTotals=new Map();
+  for(const row of seasonWeeks){
+    if(row.efficiency==null)continue;
+    const acc=effTotals.get(row.ownerId)||{sum:0,n:0};
+    acc.sum+=row.efficiency;acc.n+=1;effTotals.set(row.ownerId,acc);
+  }
+  for(const [ownerId,acc] of effTotals)efficiencyMap.set(ownerId,acc.sum/acc.n);
+
+  const rows=powerRankings(weekScores,{rosterStrength,efficiency:efficiencyMap,recentWindow:3});
+  const move=m=>m==null?'<span class="move-new">NEW</span>'
+    :m===0?'<span class="move-flat">—</span>'
+    :`<span class="${m>0?'move-up':'move-down'}">${m>0?'▲':'▼'}${Math.abs(m)}</span>`;
+  const comp=v=>v==null?'—':Math.round(v);
+  $('pulse-rankings').innerHTML=rows.map(row=>`<tr><td class="rank big-rank">${row.rank}</td><td>${move(row.movement)}</td><td><strong>${escapeHtml(names[row.ownerId]||row.ownerId)}</strong><span class="tap-hint">all-play ${row.allPlay.wins}-${row.allPlay.losses}</span></td><td class="gold-score">${comp(row.score)}</td><td>${comp(row.components.allPlay)}</td><td>${comp(row.components.recent)}</td><td>${comp(row.components.roster)}</td></tr>`).join('');
+
+  const currentWeek=Math.max(...seasonWeeks.map(r=>Number(r.week)||0),0);
+  const activity=managerActivity(seasonWeeks,{currentWeek,lastTransactionWeek:lastTransactionWeeks()});
+  const concerns=activity.filter(a=>a.concern);
+  const quiet=activity.filter(a=>!a.concern&&a.signals.length);
+  const engaged=activity.filter(a=>!a.signals.length);
+
+  const card=(row,tone)=>`<div class="pulse-manager pulse-${tone}"><div class="pulse-manager-head"><strong>${escapeHtml(row.manager)}</strong><b>${row.recentEfficiency!=null?`${(row.recentEfficiency*100).toFixed(0)}%`:'—'}</b></div>${row.signals.length?`<ul class="pulse-signals">${row.signals.map(s=>`<li>${escapeHtml(s.text)}</li>`).join('')}</ul>`:'<p class="pulse-clear">Lineups set, no signals.</p>'}</div>`;
+
+  $('pulse-activity').innerHTML=`
+    ${concerns.length?`<p class="eyebrow">WORTH A NUDGE</p><div class="pulse-grid">${concerns.map(r=>card(r,'concern')).join('')}</div>`:'<div class="empty-cell">No lineup neglect detected. Everyone is still playing.</div>'}
+    ${quiet.length?`<p class="eyebrow roster-pick-head">QUIET, BUT FINE</p><div class="pulse-grid">${quiet.map(r=>card(r,'quiet')).join('')}</div>`:''}
+    ${engaged.length?`<p class="eyebrow roster-pick-head">FULLY ENGAGED</p><div class="pulse-grid">${engaged.map(r=>card(r,'good')).join('')}</div>`:''}`;
+
+  $('pulse-note').textContent=`Ranked on all-play record (40%), recent three-week form (25%), roster market value (25%) and lineup efficiency (10%). Movement compares against the same ranking computed one week earlier.`;
+}
+async function loadPulse(){
+  $('pulse-loading').classList.remove('hidden');$('pulse-content').classList.add('hidden');
+  $('pulse-loading').innerHTML='<span class="spinner"></span>Reading the league pulse…';
+  try{
+    await ensureEfficiency();
+    await ensureMarketData().catch(()=>false);
+    await ensureWaivers().catch(()=>{});
+    const seasons=labSeasons();
+    const sel=$('pulse-season');
+    sel.innerHTML=seasons.map(s=>`<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
+    if(!state.pulseSeason||!seasons.includes(state.pulseSeason))state.pulseSeason=seasons[0]||String(state.league?.season||'');
+    sel.value=state.pulseSeason;
+    renderPulse();
+    $('pulse-loading').classList.add('hidden');$('pulse-content').classList.remove('hidden');
+  }catch(e){
+    $('pulse-loading').innerHTML=`League Pulse could not load: ${escapeHtml(e.message)}`;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Opportunity data: nflverse usage and Sleeper's trending feed
+//
+// Market value says what a player is worth. Usage says why it is moving, and
+// usually says it first: snap share and target share lead production rather
+// than following it.
+// ---------------------------------------------------------------------------
+async function ensureUsage(){
+  if(state.usage)return state.usage;
+  if(!CONFIG.proxyBase){state.usageError='No proxy configured, so usage data is unavailable.';return null;}
+  if(state.usagePromise)return state.usagePromise;
+  state.usagePromise=(async()=>{
+    await loadPlayerMap();
+    const base=CONFIG.proxyBase.replace(/\/$/,'');
+    const season=String(state.league?.season||new Date().getFullYear());
+    const fetchSet=async dataset=>{
+      const response=await fetch(`${base}?endpoint=nflverse&dataset=${dataset}&season=${season}`,{headers:{Accept:'application/json'}});
+      if(!response.ok)throw new Error(`${dataset} returned HTTP ${response.status}`);
+      const payload=await response.json();
+      return Array.isArray(payload.rows)?payload.rows:[];
+    };
+    const stats=await fetchSet('player_stats');
+    if(!stats.length)throw new Error('no weekly stats published for this season yet');
+    const formatKey=leagueScoringFormat().key;
+    const usage=aggregateUsage(stats,row=>nflversePoints(row,formatKey));
+    // Snaps are a separate nflverse dataset and are optional: if the release is
+    // not up yet, target share alone is still useful.
+    try{ mergeSnapCounts(usage,await fetchSet('snap_counts')); }catch{}
+    const byGsis=new Map();
+    for(const entry of usage.values())if(entry.gsisId)byGsis.set(String(entry.gsisId),entry);
+    state.usage=usage;state.usageByGsis=byGsis;state.usageError=null;
+    return usage;
+  })().catch(e=>{state.usageError=`Usage data unavailable: ${e.message}`;return null;})
+    .finally(()=>state.usagePromise=null);
+  return state.usagePromise;
+}
+/** Look up a Sleeper player in the nflverse set, by id first and name second. */
+function usageForPlayer(playerId){
+  if(!state.usage)return null;
+  const info=playerInfo(playerId);
+  if(info.gsisId){
+    const hit=state.usageByGsis?.get(String(info.gsisId));
+    if(hit)return hit;
+  }
+  const key=`name:${info.name.toLowerCase()}|${info.position}`;
+  return state.usage.get(key)||null;
+}
+function usageOwnerMap(){
+  const owner=new Map();
+  for(const roster of state.rosters||[])for(const id of roster.players||[])owner.set(String(id),roster.owner_id);
+  return owner;
+}
+async function ensureTrending(){
+  if(state.trending)return state.trending;
+  if(state.trendingPromise)return state.trendingPromise;
+  state.trendingPromise=(async()=>{
+    const [adds,drops]=await Promise.all([
+      api('/players/nfl/trending/add?lookback_hours=24&limit=40').catch(()=>[]),
+      api('/players/nfl/trending/drop?lookback_hours=24&limit=40').catch(()=>[])
+    ]);
+    state.trending={adds:Array.isArray(adds)?adds:[],drops:Array.isArray(drops)?drops:[]};
+    return state.trending;
+  })().finally(()=>state.trendingPromise=null);
+  return state.trendingPromise;
+}
+function pctText(value){return value==null?'—':`${(value*100).toFixed(0)}%`;}
+function deltaText(value){
+  if(value==null)return '';
+  const pts=value*100;
+  return `<em class="${pts>=0?'luck-good':'luck-bad'}">${pts>0?'+':''}${pts.toFixed(0)} pts</em>`;
+}
+function usageCardHtml(playerId){
+  const entry=usageForPlayer(playerId);
+  if(!entry)return '';
+  const trend=usageTrend(entry.weeks);
+  if(!trend)return '';
+  const line=(label,metric)=>`<div class="usage-line"><small>${escapeHtml(label)}</small><b>${pctText(metric.recent)}</b><span>was ${pctText(metric.prior)}</span>${deltaText(metric.delta)}</div>`;
+  return `<p class="eyebrow roster-pick-head">OPPORTUNITY · LAST ${trend.recentGames} GAMES VS EARLIER</p>
+    <div class="usage-grid">
+      ${line('Snap share',trend.snapPct)}
+      ${line('Target share',trend.targetShare)}
+      ${line('Air yards share',trend.airYardsShare)}
+    </div>
+    <div class="market-credit">Usage data from <a href="https://github.com/nflverse/nflverse-data" target="_blank" rel="noopener">nflverse</a>, free and open</div>`;
+}
+function renderTrendingPanel(){
+  const wrap=$('assistant-trending');
+  if(!wrap)return;
+  if(!state.trending){wrap.innerHTML='';return;}
+  const rosteredIds=rosteredPlayerIds();
+  const ownerByPlayer=usageOwnerMap();
+  const names=ownerNameMap();
+  const describe=id=>{
+    const info=playerInfo(id);
+    const entry=usageForPlayer(id);
+    const trend=entry?usageTrend(entry.weeks):null;
+    return{name:info.name,meta:info.meta,trend};
+  };
+  const adds=crossReferenceTrending(state.trending.adds,{rosteredIds,ownerByPlayer,describe});
+  const rising=state.usage?risingUsage(state.usage).slice(0,6):[];
+  const fading=state.usage?fadingUsage(state.usage).slice(0,6):[];
+
+  const trendBadge=trend=>{
+    const delta=trend?.snapPct?.delta;
+    if(delta==null)return '';
+    return `<span class="usage-badge ${delta>=0?'usage-up':'usage-down'}">${delta>0?'+':''}${(delta*100).toFixed(0)} snap%</span>`;
+  };
+  const addRow=row=>`<div class="rank-row"><span>+</span><div><strong>${escapeHtml(row.name||row.playerId)}${trendBadge(row.trend)}</strong><small>${escapeHtml(row.meta||'')} • added in ${row.count.toLocaleString()} leagues today</small></div><b>${row.ownerId?escapeHtml(names[row.ownerId]||'rostered'):'FREE'}</b></div>`;
+  const usageRow=(entry,dir)=>{
+    const trend=usageTrend(entry.weeks);
+    return `<div class="rank-row"><span>${dir==='up'?'▲':'▼'}</span><div><strong>${escapeHtml(entry.name)}</strong><small>${escapeHtml(entry.position||'')} ${escapeHtml(entry.team||'')} • snaps ${pctText(trend?.snapPct.prior)} → ${pctText(trend?.snapPct.recent)}</small></div><b class="${dir==='up'?'luck-good':'luck-bad'}">${trend?.snapPct.delta!=null?`${trend.snapPct.delta>0?'+':''}${(trend.snapPct.delta*100).toFixed(0)}`:'—'}</b></div>`;
+  };
+
+  wrap.innerHTML=`<article class="panel"><div class="panel-head"><div><p class="eyebrow">THE WIRE</p><h2>Trending &amp; Opportunity</h2></div></div>
+    <p class="assistant-note">What the rest of Sleeper is doing in the last 24 hours, cross-referenced against who is actually available here, alongside real snap and target share movement.${state.usageError?` ${escapeHtml(state.usageError)}`:''}</p>
+    <div class="arb-grid">
+      <div><p class="eyebrow">TRENDING AND FREE IN THIS LEAGUE</p>${adds.available.length?adds.available.slice(0,6).map(addRow).join(''):'<div class="empty-cell">Nothing trending is unrostered here. Competitive league.</div>'}</div>
+      <div><p class="eyebrow">TRENDING BUT ALREADY OWNED</p>${adds.rostered.length?adds.rostered.slice(0,6).map(addRow).join(''):'<div class="empty-cell">None.</div>'}</div>
+    </div>
+    ${state.usage?`<div class="arb-grid arb-split">
+      <div><p class="eyebrow">ROLE GROWING</p>${rising.length?rising.map(e=>usageRow(e,'up')).join(''):'<div class="empty-cell">No clear risers yet this season.</div>'}</div>
+      <div><p class="eyebrow">ROLE SHRINKING</p>${fading.length?fading.map(e=>usageRow(e,'down')).join(''):'<div class="empty-cell">No clear fallers yet this season.</div>'}</div>
+    </div>`:''}
+  </article>`;
+}
+
+// ---------------------------------------------------------------------------
 // Playoff odds
 // ---------------------------------------------------------------------------
 async function loadRemainingSchedule(){
@@ -1539,6 +1847,12 @@ function renderLabReportCard(){
 }
 async function showLabTab(tab){
   state.labTab=tab;
+  if(state.route?.view==='lab'&&state.route.tab!==tab){
+    state.route={...state.route,tab};
+    const hash=routeHash(state.route);
+    if(location.hash!==hash)history.replaceState(null,'',hash);
+    renderSubNav(state.route);
+  }
   $$('.lab-tab').forEach(b=>b.classList.toggle('active',b.dataset.labTab===tab));
   $$('.lab-panel').forEach(p=>p.classList.add('hidden'));
   $(`lab-${tab}-panel`).classList.remove('hidden');
@@ -1589,6 +1903,7 @@ function renderPlayerPage(playerId){
   wrap.innerHTML=`<article class="panel">
     <div class="panel-head"><div><p class="eyebrow">PLAYER DOSSIER</p><h2>${escapeHtml(info.name)}</h2><p>${escapeHtml(info.meta||'')}</p></div><strong class="market-total">${total.toFixed(1)}</strong></div>
     <div class="profile-metrics"><div><span>Weeks rostered</span><strong>${games.length}</strong></div><div><span>Weeks started</span><strong>${games.filter(g=>g.started).length}</strong></div><div><span>Points started</span><strong>${startedTotal.toFixed(1)}</strong></div><div><span>Best week</span><strong>${best?best.points.toFixed(1):'—'}</strong></div><div><span>Owners</span><strong>${new Set(games.map(g=>g.ownerId)).size}</strong></div><div><span>Times traded</span><strong>${trades.length}</strong></div></div>
+    ${usageCardHtml(state.selectedPlayer)}
     <p class="eyebrow roster-pick-head">OWNERSHIP TIMELINE</p>
     <div class="rank-list">${stints.map((s,i)=>`<div class="rank-row"><span>${i+1}</span><div><strong>${escapeHtml(s.manager)}</strong><small>${escapeHtml(String(s.from.season))} W${s.from.week} → ${escapeHtml(String(s.to.season))} W${s.to.week} • ${s.weeks} week${s.weeks===1?'':'s'}, ${s.started} started</small></div><b>${s.startedPoints.toFixed(1)}</b></div>`).join('')}</div>
     ${trades.length?`<p class="eyebrow roster-pick-head">TRADE HISTORY</p><div class="rank-list">${trades.map(t=>{const to=rosterTradeIdentity(t.item,Number(t.adds[state.selectedPlayer]));const date=tradeDateISO(t)||`${t.season} W${t.leg||'?'}`;return `<div class="rank-row"><span>⇄</span><div><strong>Traded to ${escapeHtml(to)}</strong><small>${escapeHtml(date)} • ${tradeAssetCount(t)} assets in the deal</small></div><b>${escapeHtml(String(t.season))}</b></div>`;}).join('')}</div>`:''}
@@ -1606,6 +1921,7 @@ async function loadPlayers(){
   $('players-loading').innerHTML='<span class="spinner"></span>Loading the scoring archive…';
   await ensureEfficiency();
   await ensureWaivers().catch(()=>{});
+  await ensureUsage().catch(()=>null);
   $('players-loading').classList.add('hidden');$('players-content').classList.remove('hidden');
   renderPlayerSearch();
   renderPlayerPage(state.selectedPlayer);
@@ -1623,11 +1939,13 @@ async function ensureEfficiency(){
   return state.efficiencyPromise;
 }
 function buildEfficiencyArchive(){
-  const slots=lineupSlots();
   const teamWeeks=[],weekBuckets=new Map(),games=[];
   const names=ownerNameMap();
+  const slotsBySeason={};
   for(const item of state.history){
     const season=String(item.league.season);
+    const slots=lineupSlotsFrom(item.league.roster_positions||[]);
+    slotsBySeason[season]=item.league.roster_positions||[];
     const ownerByRoster=Object.fromEntries(item.rosters.map(r=>[Number(r.roster_id),r.owner_id]));
     for(const {week,data} of item.matchups){
       const key=`${season}|${week}`;
@@ -1639,8 +1957,11 @@ function buildEfficiencyArchive(){
         const players=Object.entries(m.players_points||{}).map(([id,pts])=>({
           id:String(id),points:Number(pts)||0,pos:playerInfo(id).position
         }));
-        const row=weekEfficiency({players,startedIds:(m.starters||[]).map(String),slots});
-        teamWeeks.push({season,week,ownerId,manager:names[ownerId]||ownerId,...row});
+        const starters=(m.starters||[]).map(String);
+        const row=weekEfficiency({players,startedIds:starters,slots});
+        teamWeeks.push({season,week,ownerId,manager:names[ownerId]||ownerId,...row,
+          emptySlots:countEmptySlots(starters),
+          zeroStarters:countZeroStarters(starters,m.players_points||{})});
         scores.set(ownerId,row.actual);
         optimalByOwner.set(ownerId,row.optimal);
         if(m.matchup_id!=null)(groups[m.matchup_id]||=[]).push({ownerId,actual:row.actual,optimal:row.optimal});
@@ -1654,7 +1975,7 @@ function buildEfficiencyArchive(){
       if(scores.size)weekBuckets.set(key,{season,week,scores,opponents});
     }
   }
-  return{teamWeeks,weeks:[...weekBuckets.values()],games,names};
+  return{teamWeeks,weeks:[...weekBuckets.values()],games,names,slotsBySeason,slotChanges:summarizeSlotChanges(slotsBySeason)};
 }
 function labSeasons(){
   const seasons=[...new Set((state.efficiency?.teamWeeks||[]).map(r=>r.season))].sort((a,b)=>Number(b)-Number(a));
@@ -1676,8 +1997,9 @@ function efficiencyLeaderboard(scope){
   const rows=new Map();
   for(const tw of scope.teamWeeks){
     if(!(tw.optimal>0))continue;
-    const row=rows.get(tw.ownerId)||{ownerId:tw.ownerId,manager:tw.manager,actual:0,optimal:0,left:0,weeks:0,perfect:0};
+    const row=rows.get(tw.ownerId)||{ownerId:tw.ownerId,manager:tw.manager,actual:0,optimal:0,left:0,weeks:0,perfect:0,unmodeled:0};
     row.actual+=tw.actual;row.optimal+=tw.optimal;row.left+=tw.left;row.weeks++;
+    if(tw.modeled===false)row.unmodeled++;
     if(tw.left===0)row.perfect++;
     rows.set(tw.ownerId,row);
   }
@@ -1713,6 +2035,17 @@ function renderLab(){
   if(!scope)return;
   const eff=efficiencyLeaderboard(scope),luck=luckTable(scope),coaching=coachingRecord(scope.games);
 
+  const unmodeled=eff.reduce((n,r)=>n+(r.unmodeled||0),0);
+  const effNote=$('lab-efficiency-note');
+  if(effNote){
+    const parts=[];
+    const changes=state.efficiency?.slotChanges;
+    if(changes&&!changes.stable&&state.labSeason==='all'){
+      parts.push(`This league has changed its starting lineup. Each season is scored against its own configuration: ${changes.groups.map(g=>`${g.seasons.join(', ')} — ${escapeHtml(g.signature)}`).join(' · ')}. Seasons with more slots are not directly comparable to seasons with fewer.`);
+    }
+    if(unmodeled)parts.push(`${unmodeled} week${unmodeled===1?'':'s'} include a lineup slot this app does not model, so their efficiency is capped at 100%.`);
+    effNote.innerHTML=parts.join(' ');
+  }
   $('lab-efficiency').innerHTML=eff.length?eff.map((r,i)=>`<tr><td class="rank big-rank">${i+1}</td><td><strong>${escapeHtml(r.manager)}</strong></td><td class="gold-score">${(r.efficiency*100).toFixed(1)}%</td><td>${r.left.toFixed(1)}</td><td>${r.leftPerWeek.toFixed(1)}</td><td>${r.perfect}</td><td>${r.weeks}</td></tr>`).join(''):'<tr><td colspan="7" class="empty-cell">No scored weeks in this range.</td></tr>';
 
   const worst=[...scope.teamWeeks].sort((a,b)=>b.left-a.left).slice(0,8);
@@ -1795,10 +2128,11 @@ async function ensureEcr(){
     .finally(()=>state.ecrPromise=null);
   return state.ecrPromise;
 }
-function ecrScoring(){
-  const rec=Number(state.league?.scoring_settings?.rec||0);
-  return rec>=1?'PPR':rec>0?'HALF':'STD';
+/** The league's scoring format, detected once and shared by every source. */
+function leagueScoringFormat(){
+  return detectScoringFormat(state.league?.scoring_settings||{});
 }
+function ecrScoring(){return leagueScoringFormat().key;}
 function marketRankMap(){
   const players=[];
   for(const [id,p] of state.marketPlayers.entries()){
@@ -1874,8 +2208,12 @@ function renderStartSit(){
   const week=Number(state.nflState?.week||0);
   const unprojected=players.filter(p=>!state.projections.has(p.id)).length;
   const row=(p,kind)=>`<div class="startsit-row"><span class="startsit-tag startsit-${kind}">${kind==='start'?'START':'SIT'}</span><div><strong>${escapeHtml(p.name)}</strong><small>${escapeHtml(p.position||p.pos||'')}${p.injury?` · <em class="injury">${escapeHtml(p.injury)}</em>`:''}</small></div><b>${p.points.toFixed(1)}</b></div>`;
+  const format=leagueScoringFormat();
+  const formatNote=formatMatchesSource(format)
+    ?`Projections in ${escapeHtml(describeScoring(format))}.`
+    :`Projections in ${escapeHtml(format.short)}; this league scores ${escapeHtml(describeScoring(format))}, which no projection source publishes exactly.`;
   wrap.innerHTML=`<article class="panel"><div class="panel-head"><div><p class="eyebrow">THIS WEEK</p><h2>Start / Sit · Week ${week}</h2></div><strong class="market-total">${advice.delta>0?`+${advice.delta.toFixed(1)}`:'Optimal'}</strong></div>
-    <p class="assistant-note">Your set lineup against the best projected one. This is a points projection, unlike everything else in the app, which is dynasty market value.${unprojected?` ${unprojected} rostered player${unprojected===1?'':'s'} had no projection and count as zero.`:''}${state.projectionsInexact?` ${state.projectionsInexact} used an approximated scoring variant.`:''}</p>
+    <p class="assistant-note">Your set lineup against the best projected one. This is a points projection, unlike everything else in the app, which is dynasty market value.${unprojected?` ${unprojected} rostered player${unprojected===1?'':'s'} had no projection and count as zero.`:''}${state.projectionsInexact?` ${state.projectionsInexact} used an approximated scoring variant.`:''} ${formatNote}</p>
     ${advice.start.length||advice.sit.length
       ? `<div class="startsit-list">${advice.start.map(p=>row(p,'start')).join('')}${advice.sit.map(p=>row(p,'sit')).join('')}</div>`
       : '<div class="empty-cell">Your lineup already matches the best projected one.</div>'}
@@ -1923,6 +2261,8 @@ function rosterPositionSnapshot(ownerId){
   return built;
 }
 function buildRosterPositionSnapshot(ownerId){
+  // Positional analysis stays on the four positions that carry dynasty value.
+  // Kickers and defenses fill lineup slots but are not assets.
   const pool=playerAssetPool(ownerId),positions=['QB','RB','WR','TE'];
   const rooms=positions.map(pos=>({pos,value:positionGroupValue(pool,pos),players:pool.filter(a=>a.pos===pos).sort((a,b)=>b.value-a.value)}));
   rooms.forEach(room=>{const leagueValues=assistantManagers().map(m=>positionGroupValue(playerAssetPool(m.ownerId),room.pos));room.rank=rankAmong(leagueValues,room.value);room.leagueSize=leagueValues.length;});
@@ -2078,25 +2418,66 @@ function renderRosterAssistant(){
   $('assistant-window').innerHTML=windowCardHtml(ownerId);
   renderBestTradePartner(ownerId);
   renderStartSit();
+  renderTrendingPanel();
   renderEcrPanel();
   const trades=generateTradeSuggestions(ownerId);$('assistant-trades').innerHTML=trades.length?trades.map((x,i)=>{const f=x.framework,avg=(f.sendValue+f.receiveValue)/2||1,edge=(f.receiveValue-f.sendValue)/avg*100;return `<article class="assistant-card"><div class="assistant-card-head"><div><span>PARTNER ${i+1}</span><strong>${escapeHtml(x.partner.name)}</strong></div><b>${Math.abs(edge)<=5?'Balanced':`${Math.abs(edge).toFixed(0)}% value gap`}</b></div><p>You are #${x.myStrong.rank} at ${x.myStrong.pos} and #${x.myWeak.rank} at ${x.myWeak.pos}. ${escapeHtml(x.partner.name)} has the complementary roster shape${x.partnerWindow?` and is ${escapeHtml(x.partnerWindow.label.toLowerCase())} to your ${escapeHtml((win?.label||'position').toLowerCase())}`:''}.</p><div class="assistant-window-tags"><span>${escapeHtml(win?.label||'—')}</span><b>⇄</b><span>${escapeHtml(x.partnerWindow?.label||'—')}</span><small>${Math.round((x.windowFit||0)*100)}% window fit</small></div><div class="assistant-deal"><div><small>OFFER</small>${assetListHtml(f.send)}</div><span>⇄</span><div><small>TARGET</small>${assetListHtml(f.receive)}</div></div><div class="assistant-grades"><span>${escapeHtml(name)} <b>${gradeLetter((f.receiveValue-f.sendValue)/avg*100)}</b></span><span>${escapeHtml(x.partner.name)} <b>${gradeLetter((f.sendValue-f.receiveValue)/avg*100)}</b></span><span class="assistant-surplus">Surplus ${fmtDelta(f.surplusDelta||0)}</span></div></article>`;}).join(''):'<div class="empty-cell">No strong complementary trade match found right now. That is better than manufacturing a bad trade idea.</div>';
   const upgrades=generateFreeAgentUpgrades(ownerId);$('assistant-free-agents').innerHTML=upgrades.length?upgrades.map(x=>`<article class="assistant-card fa-upgrade"><div class="assistant-card-head"><div><span>FREE AGENT UPGRADE</span><strong>Add ${escapeHtml(x.fa.name)}</strong></div><b>+${Math.round(x.gain).toLocaleString()}</b></div><p>${escapeHtml(x.fa.pos)}${x.fa.team?` · ${escapeHtml(x.fa.team)}`:''} is currently unrostered and carries more dynasty value than a fringe asset on this roster.</p><div class="assistant-swap"><div><small>ADD</small><strong>${escapeHtml(x.fa.name)}</strong><span>${Math.round(x.fa.value).toLocaleString()} value</span></div><div>→</div><div><small>CUT CANDIDATE</small><strong>${escapeHtml(x.cut.name)}</strong><span>${Math.round(x.cut.value).toLocaleString()} value</span></div></div></article>`).join(''):'<div class="empty-cell">No meaningful same-position free-agent upgrade clears the current threshold.</div>';
   const cuts=cutCandidatePool(ownerId).slice(0,4);$('assistant-cuts').innerHTML=cuts.length?cuts.map((c,i)=>`<div class="cut-row"><span>${i+1}</span><div><strong>${escapeHtml(c.name)}</strong><small>${escapeHtml(c.meta||c.pos)} · bench only; starters, taxi, reserve, young stashes and scarce-position depth are protected</small></div><b>${Math.round(c.value).toLocaleString()}</b></div>`).join(''):'<div class="empty-cell">No eligible bench cut candidates found.</div>';
 }
 async function loadRosterAssistant(){
-  $('assistant-loading').classList.remove('hidden');$('assistant-content').classList.add('hidden');await Promise.all([ensureMarketData(),loadPlayerMap(),api(`/league/${CONFIG.primaryLeagueId}/traded_picks`).then(x=>{state.currentTradedPicks=Array.isArray(x)?x:[];clearRosterMemo();}).catch(()=>{state.currentTradedPicks=[];clearRosterMemo();})]).catch(()=>{});
+  $('assistant-loading').classList.remove('hidden');$('assistant-content').classList.add('hidden');await Promise.all([ensureMarketData(),loadPlayerMap(),api(`/league/${state.leagueId}/traded_picks`).then(x=>{state.currentTradedPicks=Array.isArray(x)?x:[];clearRosterMemo();}).catch(()=>{state.currentTradedPicks=[];clearRosterMemo();})]).catch(()=>{});
   const managers=assistantManagers(),sel=$('assistant-manager'),old=sel.value;sel.innerHTML=managers.map(m=>`<option value="${escapeHtml(m.ownerId)}">${escapeHtml(m.name)}</option>`).join('');if(old&&managers.some(m=>m.ownerId===old))sel.value=old;
   renderRosterAssistant();$('assistant-loading').classList.add('hidden');$('assistant-content').classList.remove('hidden');
   if(CONFIG.proxyBase){
     ensureEcr().then(()=>renderEcrPanel()).catch(()=>renderEcrPanel());
     ensureProjections().then(()=>renderStartSit()).catch(()=>renderStartSit());
+    ensureUsage().then(()=>renderTrendingPanel()).catch(()=>renderTrendingPanel());
   }
+  ensureTrending().then(()=>renderTrendingPanel()).catch(()=>{});
 }
 
 async function ensureArchive(){if(!state.matchupsLoaded){$('h2h-loading').classList.remove('hidden');$('franchise-loading').classList.remove('hidden');$('records-loading').classList.remove('hidden');await loadAllMatchups();$('h2h-loading').classList.add('hidden');$('records-loading').classList.add('hidden');}renderH2HSelectors();renderFranchiseHall();renderTeamRecords();renderCareerRecords();renderSeasonExplorer(Number($('explorer-season').value||0));}
 
-function activateView(name){state.view=name;$$('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.view===name));$$('.view').forEach(v=>v.classList.toggle('active-view',v.id===`${name}-view`));}
-async function navigate(name){activateView(name);try{if(['franchises','headtohead','records','season'].includes(name))await ensureArchive();if(name==='franchises')enhanceFranchiseMarket().catch(()=>{});if(name==='trades')await loadTrades();if(name==='tradelab')await loadTradeLab();if(name==='assistant')await loadRosterAssistant();if(name==='lab')await loadLab();if(name==='odds')await loadOdds();if(name==='players')await loadPlayers();if(name==='headtohead')renderH2H();if(name==='records')await showRecordView(state.recordView);}catch(e){showError(`Historical analytics could not finish loading: ${e.message}`);}}
+function renderNav(){
+  $('nav').innerHTML=NAV.map(group=>`<button class="nav-item" data-group="${escapeHtml(group.key)}"><span class="nav-icon">${group.icon}</span><span>${escapeHtml(group.label)}</span></button>`).join('');
+  $$('.nav-item').forEach(button=>button.addEventListener('click',()=>{
+    const group=NAV.find(g=>g.key===button.dataset.group);
+    const first=group?.items?.[0];
+    if(first)goTo({group:group.key,view:first.view,tab:first.tab||null});
+  }));
+}
+function renderSubNav(route){
+  const items=itemsForGroup(route.group);
+  const current=routeId(route);
+  $('subnav').innerHTML=items.map(item=>`<button class="subnav-item${item.id===current?' active':''}" data-route="${escapeHtml(item.id)}">${escapeHtml(item.label)}</button>`).join('');
+  $$('.subnav-item').forEach(button=>button.addEventListener('click',()=>{
+    const target=items.find(i=>i.id===button.dataset.route);
+    if(target)goTo({group:route.group,view:target.view,tab:target.tab||null});
+  }));
+}
+function activateView(route){
+  state.route=route;state.view=route.view;
+  $$('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.group===route.group));
+  $$('.view').forEach(v=>v.classList.toggle('active-view',v.id===`${route.view}-view`));
+  renderSubNav(route);
+}
+/** Move to a destination, update the hash so it can be shared, then load it. */
+async function goTo(target,{replace=false}={}){
+  const route=resolveRoute(target);
+  const hash=routeHash(route);
+  if(location.hash!==hash){
+    if(replace)history.replaceState(null,'',hash);
+    else history.pushState(null,'',hash);
+  }
+  await navigate(route);
+}
+async function navigate(target){
+  const route=typeof target==='string'?resolveRoute(parseRoute(target)):resolveRoute(target);
+  activateView(route);
+  const name=route.view;
+  try{if(['franchises','headtohead','records','season'].includes(name))await ensureArchive();if(name==='franchises')enhanceFranchiseMarket().catch(()=>{});if(name==='trades')await loadTrades();if(name==='tradelab')await loadTradeLab();if(name==='assistant')await loadRosterAssistant();if(name==='lab')await loadLab();if(name==='odds')await loadOdds();if(name==='pulse')await loadPulse();if(name==='leagues')await loadLeagues();if(name==='players')await loadPlayers();if(name==='headtohead')renderH2H();if(name==='records')await showRecordView(state.recordView);
+    if(route.tab&&name==='lab')await showLabTab(route.tab);
+  }catch(e){showError(`Historical analytics could not finish loading: ${e.message}`);}}
 
 // Full reload used to be location.reload(), which threw away the player
 // directory cache and every loaded season. Drop only the volatile state and
@@ -2110,15 +2491,212 @@ async function refreshAll(){
   state.currentTradedPicks=null;state.tradeRelationshipsLoaded=false;state.tradeRelationshipsPromise=null;
   state.tradeLabRendered=false;state.pickValueWarned=false;
   state.lineageReady=false;state.lineagePromise=null;state.lineageByTrade.clear();
-  state.efficiency=null;state.efficiencyPromise=null;state.odds=null;state.oddsPromise=null;state.oddsError=null;state.waiversBySeason.clear();state.waiversLoaded=false;state.ecr=null;state.ecrPromise=null;state.ecrError=null;state.projections=null;state.projectionsPromise=null;state.projectionsError=null;
+  state.efficiency=null;state.efficiencyPromise=null;state.odds=null;state.oddsPromise=null;state.oddsError=null;state.usage=null;state.usagePromise=null;state.usageError=null;state.trending=null;state.waiversBySeason.clear();state.waiversLoaded=false;state.ecr=null;state.ecrPromise=null;state.ecrError=null;state.projections=null;state.projectionsPromise=null;state.projectionsError=null;
   clearRosterMemo();
   await load();
-  await navigate(state.view);
+  await navigate(state.route);
 }
 
-async function load(){clearError();setApiState('loading','Connecting to Sleeper');$('league-meta').textContent='Loading league...';try{state.league=await api(`/league/${CONFIG.primaryLeagueId}`);[state.users,state.rosters,state.nflState]=await Promise.all([api(`/league/${CONFIG.primaryLeagueId}/users`),api(`/league/${CONFIG.primaryLeagueId}/rosters`),api('/state/nfl').catch(()=>null)]);renderCurrentLeague();await renderCurrentWeek();stampLiveUpdate();startLiveRefresh();setApiState('','Live Sleeper data');try{await loadHistory();setApiState('','Live + history ready');$('overview-legends').innerHTML='<div class="mini-award"><span>Historical Analytics</span><strong>Ready on demand</strong><small>Open H2H, Franchises or Records to load the deep archive.</small></div>';}catch(e){showError(`Current league loaded, but history could not finish: ${e.message}`);}}catch(e){showError(`Could not load Sleeper league ${CONFIG.primaryLeagueId}: ${e.message}`);}}
+/** Open whatever the URL asks for, so shared links land in the right place. */
+async function openInitialRoute(){
+  const route=resolveRoute(parseRoute(location.hash));
+  await goTo(route,{replace:true});
+}
 
-$$('.nav-item').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.view)));$$('[data-jump]').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.jump)));$('season-select').addEventListener('change',e=>renderStandingsSeason(Number(e.target.value)));$('explorer-season').addEventListener('change',e=>renderSeasonExplorer(Number(e.target.value)));$('franchise-select').addEventListener('change',e=>renderFranchiseProfile(e.target.value));$('trade-season').addEventListener('change',loadSelectedTradeSeason);$('trade-chain-toggle').addEventListener('click',()=>{setChainMode(!state.chainMode).catch(e=>showError(`Chain grades failed: ${e.message}`));});$('trade-lab-a').addEventListener('change',()=>{state.tradeLabSelections.a.clear();refreshTradeLabSides();});$('trade-lab-b').addEventListener('change',()=>{state.tradeLabSelections.b.clear();refreshTradeLabSides();});$('assistant-manager').addEventListener('change',renderRosterAssistant);$('lab-season').addEventListener('change',e=>{state.labSeason=e.target.value;renderLab();if(state.labTab!=='efficiency')showLabTab(state.labTab);});
-$$('.lab-tab').forEach(b=>b.addEventListener('click',()=>showLabTab(b.dataset.labTab)));
-$('player-search').addEventListener('input',e=>{state.playerQuery=e.target.value;renderPlayerSearch();});$('lab-swap-manager').addEventListener('change',()=>{const scope=labFilter();if(scope)renderScheduleSwap(scope);});$('h2h-a').addEventListener('change',renderH2H);$('h2h-b').addEventListener('change',renderH2H);$$('.h2h-mode-tab').forEach(b=>b.addEventListener('click',()=>setH2HMode(b.dataset.h2hMode)));$('trade-partner-manager').addEventListener('change',()=>{renderTradeRelationships();hydrateSelectedTradeRelationship();});$('trade-partner-opponent').addEventListener('change',()=>{renderTradeRelationships();hydrateSelectedTradeRelationship();});$$('.record-tab').filter(b=>!b.classList.contains('h2h-mode-tab')).forEach(b=>b.addEventListener('click',()=>showRecordView(b.dataset.recordView)));$('refresh-btn').addEventListener('click',()=>{refreshAll().catch(e=>showError(`Refresh failed: ${e.message}`));});
-load();
+// ---------------------------------------------------------------------------
+// League selection
+//
+// The app used to be one league hardcoded at build time. Now the league is
+// runtime state, resolved from the URL first so links are shareable, then the
+// last one opened, then the configured default.
+// ---------------------------------------------------------------------------
+function resolveInitialLeague(){
+  const fromUrl=parseLeagueInput(new URLSearchParams(location.search).get('league')||'');
+  if(fromUrl)return fromUrl;
+  const stored=cacheGet(CONFIG.lastLeagueKey,365*24*60*60*1000);
+  if(isValidLeagueId(stored))return String(stored);
+  return CONFIG.primaryLeagueId;
+}
+function loadRecentLeagues(){
+  const stored=cacheGet(CONFIG.recentLeaguesKey,365*24*60*60*1000);
+  state.recentLeagues=Array.isArray(stored)?stored:[];
+  return state.recentLeagues;
+}
+function rememberLeague(league){
+  if(!league?.league_id)return;
+  state.recentLeagues=upsertRecentLeague(state.recentLeagues,{
+    leagueId:league.league_id,name:league.name||'Untitled league',
+    season:league.season,avatar:league.avatar||null,teams:Number(league.total_rosters)||null
+  });
+  cacheSet(CONFIG.recentLeaguesKey,state.recentLeagues);
+  cacheSet(CONFIG.lastLeagueKey,league.league_id);
+}
+/**
+ * Wipe everything derived from the previous league. Anything keyed to players
+ * rather than leagues (the Sleeper directory, market values, nflverse usage) is
+ * deliberately kept, because it is expensive and league-independent.
+ */
+function resetLeagueState(){
+  state.league=null;state.users=[];state.rosters=[];
+  state.history=[];state.historyLoaded=false;
+  state.archive=null;state.matchupsLoaded=false;state.matchupsPromise=null;
+  state.tradesBySeason.clear();state.tradePromisesBySeason.clear();
+  state.tradeGradesBySeason.clear();state.tradeGradePromises.clear();
+  state.draftResolutions.clear();state.draftResolutionSeasons.clear();
+  state.waiversBySeason.clear();state.waiversLoaded=false;
+  state.currentTradedPicks=null;state.tradeRelationshipsLoaded=false;state.tradeRelationshipsPromise=null;
+  state.tradeLabRendered=false;state.lineageReady=false;state.lineagePromise=null;state.lineageByTrade.clear();
+  state.efficiency=null;state.efficiencyPromise=null;
+  state.odds=null;state.oddsPromise=null;state.oddsError=null;
+  state.pulseSeason=null;state.labSeason='all';state.labTab='efficiency';
+  state.selectedPlayer=null;state.playerQuery='';
+  // Scoring settings differ per league, so expert data has to be re-derived.
+  state.ecr=null;state.ecrPromise=null;state.ecrError=null;state.ecrCoverage=null;
+  state.projections=null;state.projectionsPromise=null;state.projectionsError=null;
+  clearRosterMemo();
+}
+async function switchLeague(leagueId){
+  const id=parseLeagueInput(leagueId);
+  if(!id){showError('That does not look like a Sleeper league id or link.');return false;}
+  if(id===state.leagueId){await goTo({group:'now',view:'overview'});return true;}
+  resetLeagueState();
+  state.leagueId=id;
+  const url=new URL(location.href);
+  url.searchParams.set('league',id);
+  history.replaceState(null,'',url.toString()+location.hash);
+  await load();
+  await goTo({group:'now',view:'overview'});
+  return true;
+}
+function renderLeagueSwitcher(){
+  const node=$('league-switch');
+  if(!node)return;
+  node.textContent=state.league?.name||'Choose league';
+}
+
+// ---------------------------------------------------------------------------
+// Multi-league dashboard
+// ---------------------------------------------------------------------------
+async function lookupUserLeagues(username){
+  const handle=normalizeUsername(username);
+  if(!handle)return[];
+  const user=await api(`/user/${encodeURIComponent(handle)}`);
+  if(!user?.user_id)throw new Error('no Sleeper user with that name');
+  state.sleeperUser=user;
+  const season=String(state.nflState?.season||state.league?.season||new Date().getFullYear());
+  const leagues=await api(`/user/${user.user_id}/leagues/nfl/${season}`).catch(()=>[]);
+  return Array.isArray(leagues)?leagues:[];
+}
+/** A deliberately light load: four requests per league, no archive crawl. */
+async function summarizeLeague(leagueId,userId){
+  const league=await api(`/league/${leagueId}`).catch(()=>null);
+  if(!league)return null;
+  const week=Number(state.nflState?.week||1);
+  const [rosters,users,matchups]=await Promise.all([
+    api(`/league/${leagueId}/rosters`).catch(()=>[]),
+    api(`/league/${leagueId}/users`).catch(()=>[]),
+    api(`/league/${leagueId}/matchups/${week}`).catch(()=>[])
+  ]);
+  return summarizeLeagueForUser({league,rosters,users,matchups,userId,countEmptySlots});
+}
+async function buildLeagueSummaries(){
+  const userId=state.sleeperUser?.user_id||null;
+  const ids=[...new Set([state.leagueId,...state.recentLeagues.map(l=>l.leagueId)].filter(Boolean))];
+  const rows=await Promise.all(ids.map(id=>summarizeLeague(id,userId).catch(()=>null)));
+  return sortLeagueSummaries(rows.filter(Boolean));
+}
+function leagueCardHtml(row){
+  const record=row.inLeague?`${row.wins}-${row.losses}${row.ties?`-${row.ties}`:''}`:'Not in this league';
+  const live=row.opponent?`<small>${row.myScore.toFixed(1)} vs ${escapeHtml(row.opponent)} ${row.opponentScore.toFixed(1)}</small>`:'<small>No matchup this week</small>';
+  const current=row.leagueId===state.leagueId;
+  return `<article class="league-card${row.needsAttention?' league-attention':''}${current?' league-current':''}">
+    <div class="league-card-head"><div><strong>${escapeHtml(row.name)}</strong><small>${escapeHtml(String(row.season))} • ${row.teams} teams${current?' • open now':''}</small></div>${row.rank?`<b>#${row.rank}</b>`:''}</div>
+    <div class="league-card-body"><span>${escapeHtml(record)}</span>${live}</div>
+    ${row.needsAttention?`<p class="league-alert">${row.emptySlots} empty lineup slot${row.emptySlots===1?'':'s'} this week</p>`:''}
+    <div class="league-card-actions">
+      <button type="button" class="text-button" data-open-league="${escapeHtml(row.leagueId)}">${current?'Reload':'Open'} →</button>
+      ${current?'':`<button type="button" class="text-button muted" data-forget-league="${escapeHtml(row.leagueId)}">Forget</button>`}
+    </div>
+  </article>`;
+}
+function renderLeagues(){
+  const rows=state.leagueSummaries||[];
+  const totals=aggregateLeagueSummaries(rows);
+  $('leagues-summary').innerHTML=rows.length?`<div class="profile-metrics">
+    <div><span>Leagues</span><strong>${totals.leagues}</strong></div>
+    <div><span>Playing in</span><strong>${totals.playing}</strong></div>
+    <div><span>Combined record</span><strong>${totals.wins}-${totals.losses}</strong></div>
+    <div><span>First place</span><strong>${totals.firstPlace}</strong></div>
+    <div><span>Need attention</span><strong class="${totals.attention?'luck-bad':''}">${totals.attention}</strong></div>
+  </div>`:'';
+  $('leagues-list').innerHTML=rows.length?rows.map(leagueCardHtml).join('')
+    :'<div class="empty-cell">No leagues loaded yet. Add one below.</div>';
+  $$('[data-open-league]').forEach(b=>b.addEventListener('click',()=>{
+    switchLeague(b.dataset.openLeague).catch(e=>showError(`Could not open that league: ${e.message}`));
+  }));
+  $$('[data-forget-league]').forEach(b=>b.addEventListener('click',()=>{
+    state.recentLeagues=removeRecentLeague(state.recentLeagues,b.dataset.forgetLeague);
+    cacheSet(CONFIG.recentLeaguesKey,state.recentLeagues);
+    state.leagueSummaries=(state.leagueSummaries||[]).filter(r=>r.leagueId!==b.dataset.forgetLeague);
+    renderLeagues();
+  }));
+  $('leagues-message').innerHTML=state.leaguesMessage?escapeHtml(state.leaguesMessage):'';
+}
+async function loadLeagues({force=false}={}){
+  $('leagues-loading').classList.remove('hidden');
+  if(force||!state.leagueSummaries){
+    $('leagues-loading').innerHTML='<span class="spinner"></span>Checking your leagues…';
+    state.leagueSummaries=await buildLeagueSummaries().catch(()=>[]);
+  }
+  $('leagues-loading').classList.add('hidden');
+  $('leagues-content').classList.remove('hidden');
+  renderLeagues();
+}
+async function addLeagueFromInput(){
+  const value=$('league-input').value;
+  const id=parseLeagueInput(value);
+  if(!id){state.leaguesMessage='That does not look like a Sleeper league id or link. Paste either the id or the URL from the Sleeper app.';renderLeagues();return;}
+  state.leaguesMessage=null;
+  $('league-input').value='';
+  await switchLeague(id);
+}
+async function importUserLeagues(){
+  const username=$('league-username').value;
+  if(!normalizeUsername(username)){state.leaguesMessage='Enter your Sleeper username.';renderLeagues();return;}
+  $('leagues-loading').classList.remove('hidden');
+  $('leagues-loading').innerHTML='<span class="spinner"></span>Finding your leagues…';
+  try{
+    const leagues=await lookupUserLeagues(username);
+    if(!leagues.length){state.leaguesMessage='No leagues found for that username this season.';}
+    else{
+      for(const league of leagues)rememberLeague(league);
+      state.leaguesMessage=`Added ${leagues.length} league${leagues.length===1?'':'s'} for ${escapeHtml(state.sleeperUser?.display_name||username)}.`;
+    }
+    await loadLeagues({force:true});
+  }catch(e){
+    state.leaguesMessage=`Could not look that up: ${e.message}`;
+    $('leagues-loading').classList.add('hidden');
+    renderLeagues();
+  }
+}
+
+async function load(){clearError();setApiState('loading','Connecting to Sleeper');$('league-meta').textContent='Loading league...';try{state.league=await api(`/league/${state.leagueId}`);[state.users,state.rosters,state.nflState]=await Promise.all([api(`/league/${state.leagueId}/users`),api(`/league/${state.leagueId}/rosters`),api('/state/nfl').catch(()=>null)]);rememberLeague(state.league);renderLeagueSwitcher();renderCurrentLeague();await renderCurrentWeek();stampLiveUpdate();startLiveRefresh();setApiState('','Live Sleeper data');try{await loadHistory();setApiState('','Live + history ready');$('overview-legends').innerHTML='<div class="mini-award"><span>Historical Analytics</span><strong>Ready on demand</strong><small>Open H2H, Franchises or Records to load the deep archive.</small></div>';}catch(e){showError(`Current league loaded, but history could not finish: ${e.message}`);}}catch(e){showError(`Could not load Sleeper league ${state.leagueId}: ${e.message}`);}}
+
+state.leagueId=resolveInitialLeague();
+loadRecentLeagues();
+renderNav();
+activateView(resolveRoute(parseRoute(location.hash)));
+window.addEventListener('popstate',()=>navigate(resolveRoute(parseRoute(location.hash))));
+window.addEventListener('hashchange',()=>{
+  const route=resolveRoute(parseRoute(location.hash));
+  if(routeId(route)!==routeId(state.route))navigate(route);
+});
+$$('[data-jump]').forEach(b=>b.addEventListener('click',()=>goTo(resolveRoute(parseRoute(b.dataset.jump)))));$('season-select').addEventListener('change',e=>renderStandingsSeason(Number(e.target.value)));$('explorer-season').addEventListener('change',e=>renderSeasonExplorer(Number(e.target.value)));$('franchise-select').addEventListener('change',e=>renderFranchiseProfile(e.target.value));$('trade-season').addEventListener('change',loadSelectedTradeSeason);$('trade-chain-toggle').addEventListener('click',()=>{setChainMode(!state.chainMode).catch(e=>showError(`Chain grades failed: ${e.message}`));});$('trade-lab-a').addEventListener('change',()=>{state.tradeLabSelections.a.clear();refreshTradeLabSides();});$('trade-lab-b').addEventListener('change',()=>{state.tradeLabSelections.b.clear();refreshTradeLabSides();});$('assistant-manager').addEventListener('change',renderRosterAssistant);$('lab-season').addEventListener('change',e=>{state.labSeason=e.target.value;renderLab();if(state.labTab!=='efficiency')showLabTab(state.labTab);});
+$('player-search').addEventListener('input',e=>{state.playerQuery=e.target.value;renderPlayerSearch();});
+$('pulse-season').addEventListener('change',e=>{state.pulseSeason=e.target.value;renderPulse();});
+$('league-switch').addEventListener('click',()=>goTo({group:'now',view:'leagues'}));
+$('league-add').addEventListener('click',()=>{addLeagueFromInput().catch(e=>showError(`Could not add league: ${e.message}`));});
+$('league-input').addEventListener('keydown',e=>{if(e.key==='Enter')addLeagueFromInput().catch(()=>{});});
+$('league-import').addEventListener('click',()=>{importUserLeagues().catch(()=>{});});
+$('league-username').addEventListener('keydown',e=>{if(e.key==='Enter')importUserLeagues().catch(()=>{});});$('lab-swap-manager').addEventListener('change',()=>{const scope=labFilter();if(scope)renderScheduleSwap(scope);});$('h2h-a').addEventListener('change',renderH2H);$('h2h-b').addEventListener('change',renderH2H);$$('.h2h-mode-tab').forEach(b=>b.addEventListener('click',()=>setH2HMode(b.dataset.h2hMode)));$('trade-partner-manager').addEventListener('change',()=>{renderTradeRelationships();hydrateSelectedTradeRelationship();});$('trade-partner-opponent').addEventListener('change',()=>{renderTradeRelationships();hydrateSelectedTradeRelationship();});$$('.record-tab').filter(b=>!b.classList.contains('h2h-mode-tab')).forEach(b=>b.addEventListener('click',()=>showRecordView(b.dataset.recordView)));$('refresh-btn').addEventListener('click',()=>{refreshAll().catch(e=>showError(`Refresh failed: ${e.message}`));});
+load().then(()=>openInitialRoute()).catch(()=>{});

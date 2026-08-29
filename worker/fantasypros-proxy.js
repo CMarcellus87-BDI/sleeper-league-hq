@@ -21,6 +21,96 @@ const UPSTREAM = 'https://api.fantasypros.com/public/v2/json/nfl';
 // Which upstream resources this proxy will serve. Adding one here is the only
 // change needed to expose it; everything else is parameter validation.
 const ENDPOINTS = ['consensus-rankings', 'projections'];
+
+// nflverse publishes open weekly data as CSV on GitHub releases. It is routed
+// through here rather than fetched directly for three reasons: CORS on release
+// assets is not guaranteed, the files are several megabytes, and the edge cache
+// means a whole league costs one upstream fetch a day.
+const NFLVERSE_BASE = 'https://github.com/nflverse/nflverse-data/releases/download';
+const NFLVERSE_DATASETS = {
+  player_stats: {
+    path: season => `player_stats/player_stats_${season}.csv`,
+    columns: ['player_id', 'player_display_name', 'position', 'recent_team', 'season', 'week',
+      'targets', 'receptions', 'carries', 'receiving_air_yards', 'target_share', 'air_yards_share',
+      'wopr', 'fantasy_points', 'fantasy_points_ppr']
+  },
+  snap_counts: {
+    path: season => `snap_counts/snap_counts_${season}.csv`,
+    columns: ['player', 'position', 'team', 'season', 'week', 'offense_snaps', 'offense_pct']
+  }
+};
+const NFLVERSE_CACHE_SECONDS = 60 * 60 * 12;
+
+// Minimal CSV reader. Mirrors parseCsv in usage.js, which is the tested copy;
+// this one exists only so the worker can strip columns before sending.
+function readCsv(text) {
+  const rows = [];
+  let field = '', row = [], quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else quoted = false; }
+      else field += c;
+      continue;
+    }
+    if (c === '"') { quoted = true; continue; }
+    if (c === ',') { row.push(field); field = ''; continue; }
+    if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; continue; }
+    if (c === '\r') continue;
+    field += c;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+async function handleNflverse(incoming, cors, ctx) {
+  const dataset = incoming.searchParams.get('dataset') || 'player_stats';
+  const season = incoming.searchParams.get('season') || String(new Date().getFullYear());
+  const spec = NFLVERSE_DATASETS[dataset];
+  if (!spec || !/^\d{4}$/.test(season)) {
+    return new Response(JSON.stringify({ error: 'Unknown dataset or season', allowed: Object.keys(NFLVERSE_DATASETS) }), {
+      status: 400, headers: { ...cors, 'Content-Type': 'application/json' }
+    });
+  }
+
+  const url = `${NFLVERSE_BASE}/${spec.path(season)}`;
+  const cacheKey = new Request(url, { method: 'GET' });
+  const cached = await caches.default.match(cacheKey);
+  if (cached) {
+    const hit = new Response(cached.body, cached);
+    for (const [k, v] of Object.entries(cors)) hit.headers.set(k, v);
+    return hit;
+  }
+
+  const upstream = await fetch(url, { headers: { Accept: 'text/csv' } });
+  if (!upstream.ok) {
+    return new Response(JSON.stringify({ error: `nflverse returned HTTP ${upstream.status}`, dataset, season }), {
+      status: 502, headers: { ...cors, 'Content-Type': 'application/json' }
+    });
+  }
+
+  const rows = readCsv(await upstream.text());
+  if (!rows.length) {
+    return new Response(JSON.stringify({ error: 'Empty dataset' }), {
+      status: 502, headers: { ...cors, 'Content-Type': 'application/json' }
+    });
+  }
+  const header = rows[0].map(h => h.trim());
+  const keep = spec.columns.map(col => header.indexOf(col)).filter(i => i >= 0);
+  const keptNames = keep.map(i => header[i]);
+  const out = rows.slice(1)
+    .filter(r => r.length > 1)
+    .map(r => Object.fromEntries(keptNames.map((name, n) => [name, r[keep[n]] ?? ''])));
+
+  const body = JSON.stringify({ dataset, season, columns: keptNames, count: out.length, rows: out });
+  const response = new Response(body, {
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': `public, max-age=${NFLVERSE_CACHE_SECONDS}` }
+  });
+  ctx.waitUntil(caches.default.put(cacheKey, response.clone()));
+  const result = new Response(response.body, response);
+  for (const [k, v] of Object.entries(cors)) result.headers.set(k, v);
+  return result;
+}
 const CACHE_SECONDS = 60 * 60 * 6;
 
 // Only these may be forwarded, and only with these values. An open proxy with
@@ -77,12 +167,6 @@ export default {
         status: 403, headers: { ...cors, 'Content-Type': 'application/json' }
       });
     }
-    if (!env.FANTASYPROS_API_KEY) {
-      return new Response(JSON.stringify({ error: 'Proxy is missing FANTASYPROS_API_KEY' }), {
-        status: 500, headers: { ...cors, 'Content-Type': 'application/json' }
-      });
-    }
-
     const incoming = new URL(request.url);
     const season = incoming.searchParams.get('season') || String(new Date().getFullYear());
     if (!ALLOWED.season.test(season)) {
@@ -92,6 +176,16 @@ export default {
     }
 
     const endpoint = incoming.searchParams.get('endpoint') || 'consensus-rankings';
+
+    // nflverse is open data and needs no key, so it bypasses the key check.
+    if (endpoint === 'nflverse') return handleNflverse(incoming, cors, ctx);
+
+    if (!env.FANTASYPROS_API_KEY) {
+      return new Response(JSON.stringify({ error: 'Proxy is missing FANTASYPROS_API_KEY' }), {
+        status: 500, headers: { ...cors, 'Content-Type': 'application/json' }
+      });
+    }
+
     if (!ENDPOINTS.includes(endpoint)) {
       return new Response(JSON.stringify({ error: 'Unknown endpoint', allowed: ENDPOINTS }), {
         status: 400, headers: { ...cors, 'Content-Type': 'application/json' }
