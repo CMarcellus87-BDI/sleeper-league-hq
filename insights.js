@@ -111,6 +111,18 @@ export function draftLeaderboard(gradedPicks = []) {
 }
 
 /**
+ * Number(null) is 0 and Number('') is 0, both finite, so a plain isFinite guard
+ * lets missing data through as a real zero. This has caused the same bug twice:
+ * a manager with no waiver claims scoring worst, and a missing percentile
+ * grading F. One helper, used everywhere a value might be absent.
+ */
+function toNumberOrNull(value) {
+  if (value == null || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
  * Convert raw values to a 0-100 score within the league.
  * `higherIsBetter: false` inverts, so a metric like points left on the bench
  * scores well when it is low.
@@ -118,11 +130,7 @@ export function draftLeaderboard(gradedPicks = []) {
 export function normalizeScores(values = [], higherIsBetter = true) {
   // Number(null) is 0, which is finite, so nulls must be rejected before the
   // conversion or a missing metric scores as the worst possible value.
-  const nums = values.map(v => {
-    if (v == null || v === '') return null;
-    const n = Number(v);
-    return Number.isFinite(n) ? n : null;
-  });
+  const nums = values.map(toNumberOrNull);
   const present = nums.filter(v => v != null);
   if (!present.length) return nums.map(() => 50);
   const min = Math.min(...present);
@@ -176,7 +184,32 @@ export function reportCard(ownerIds = [], categories = []) {
     };
   });
 
-  return rows.sort((a, b) => b.overall - a.overall);
+  // Min-max normalising every category and averaging pulls everyone toward the
+  // middle: the best manager in the league tops one category, is average in
+  // others, and lands around 70. A report card should say who was best, so the
+  // letter comes from standing within the league rather than the raw composite.
+  const ordered = rows.sort((a, b) => b.overall - a.overall);
+  const last = Math.max(1, ordered.length - 1);
+  return ordered.map((row, index) => ({
+    ...row,
+    rank: index + 1,
+    percentile: ordered.length > 1 ? ((last - index) / last) * 100 : 100
+  }));
+}
+
+/** Letter for a within-league percentile, so the best manager gets an A. */
+export function reportGrade(percentile) {
+  const p = toNumberOrNull(percentile);
+  if (p == null) return '—';
+  if (p >= 95) return 'A+';
+  if (p >= 85) return 'A';
+  if (p >= 72) return 'A-';
+  if (p >= 60) return 'B+';
+  if (p >= 48) return 'B';
+  if (p >= 36) return 'B-';
+  if (p >= 24) return 'C';
+  if (p >= 12) return 'D';
+  return 'F';
 }
 
 /**

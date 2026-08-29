@@ -59,6 +59,52 @@ export function optimalLineup(players = [], slots = []) {
 }
 
 /**
+ * Legal start/sit swaps: pairs of players who could actually have traded places.
+ *
+ * Comparing "best scorer benched" against "worst starter" independently produces
+ * nonsense like benching a quarterback for a receiver, because the two never
+ * shared a slot. A swap is only offered when some slot in this league admits
+ * both players, which is what makes it a move the manager could have made.
+ */
+export function lineupSwaps(players = [], startedIds = [], slots = []) {
+  const byId = new Map(players.map(p => [String(p.id), p]));
+  const started = (startedIds || []).map(String).filter(id => id && id !== '0');
+  const startedSet = new Set(started);
+  const best = optimalLineup(players, slots);
+
+  const missed = players
+    .filter(p => !startedSet.has(String(p.id)) && best.chosenIds.has(String(p.id)))
+    .sort((a, b) => Number(b.points) - Number(a.points));
+  const benched = started
+    .map(id => byId.get(id))
+    .filter(p => p && !best.chosenIds.has(String(p.id)))
+    .sort((a, b) => Number(a.points) - Number(b.points));
+
+  const admits = (slot, player) => player?.pos && slot.includes(player.pos);
+  const used = new Set();
+  const swaps = [];
+
+  for (const incoming of missed) {
+    for (const outgoing of benched) {
+      if (used.has(String(outgoing.id))) continue;
+      if (Number(incoming.points) <= Number(outgoing.points)) continue;
+      // The swap has to be legal: one slot that would take either player.
+      const slot = slots.find(s => admits(s, incoming) && admits(s, outgoing));
+      if (!slot) continue;
+      used.add(String(outgoing.id));
+      swaps.push({
+        in: incoming,
+        out: outgoing,
+        slot,
+        gain: Number(incoming.points) - Number(outgoing.points)
+      });
+      break;
+    }
+  }
+  return swaps.sort((a, b) => b.gain - a.gain);
+}
+
+/**
  * What one manager actually got versus what was sitting on the roster.
  * `benched` is the single most painful start/sit call: the best scorer left out
  * of the lineup, paired with the starter who should have made way.
@@ -82,10 +128,14 @@ export function weekEfficiency({ players = [], startedIds = [], slots = [] } = {
   // beat a perfect lineup, so it is flagged rather than silently reported.
   const modeled = best.total + 0.01 >= actual;
 
+  const swaps = lineupSwaps(players, startedIds, slots);
+
   return {
     actual,
     optimal: best.total,
     modeled,
+    swaps,
+    topSwap: swaps[0] || null,
     left: Math.max(0, best.total - actual),
     efficiency: best.total > 0 ? Math.min(1, actual / best.total) : null,
     topMiss: missed[0] || null,

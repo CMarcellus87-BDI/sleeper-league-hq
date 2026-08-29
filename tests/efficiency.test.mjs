@@ -9,7 +9,8 @@ import {
   scheduleSwap,
   coachingRecord,
   slotSignature,
-  summarizeSlotChanges
+  summarizeSlotChanges,
+  lineupSwaps
 } from '../efficiency.js';
 
 const SLOTS = [['QB'], ['RB'], ['RB'], ['WR'], ['WR'], ['TE'], ['RB', 'WR', 'TE']];
@@ -241,4 +242,60 @@ test('a league returning to an old configuration groups those seasons together',
   });
   assert.equal(summary.groups.length, 2);
   assert.deepEqual(summary.groups.find(g => g.seasons.includes('2024')).seasons, ['2022', '2024']);
+});
+
+test('a swap is only offered when a slot would take both players', () => {
+  // The bug this replaces: "benched Brock Purdy for Quentin Johnston" in a
+  // league where no slot admits both a quarterback and a receiver.
+  const players = [
+    { id: 'qb1', pos: 'QB', points: 8 },
+    { id: 'qb2', pos: 'QB', points: 26 },
+    { id: 'wr1', pos: 'WR', points: 3 },
+    { id: 'wr2', pos: 'WR', points: 19 }
+  ];
+  const swaps = lineupSwaps(players, ['qb1', 'wr1'], [['QB'], ['WR']]);
+  assert.equal(swaps.length, 2);
+  for (const swap of swaps) {
+    assert.equal(swap.in.pos, swap.out.pos, 'a quarterback never replaces a receiver in a 1QB league');
+  }
+  assert.equal(swaps[0].in.id, 'qb2');
+  assert.equal(swaps[0].out.id, 'qb1');
+  assert.equal(swaps[0].gain, 18);
+});
+
+test('superflex makes a quarterback-for-receiver swap legal', () => {
+  const players = [
+    { id: 'qb2', pos: 'QB', points: 26 },
+    { id: 'wr1', pos: 'WR', points: 3 }
+  ];
+  const swaps = lineupSwaps(players, ['wr1'], [['QB', 'RB', 'WR', 'TE']]);
+  assert.equal(swaps.length, 1);
+  assert.equal(swaps[0].in.id, 'qb2', 'the superflex admits both, so the swap is real');
+});
+
+test('a flex swap across eligible positions is allowed', () => {
+  const players = [
+    { id: 'rb1', pos: 'RB', points: 4 },
+    { id: 'te1', pos: 'TE', points: 21 }
+  ];
+  const swaps = lineupSwaps(players, ['rb1'], [['RB', 'WR', 'TE']]);
+  assert.equal(swaps[0].in.id, 'te1');
+  assert.equal(swaps[0].out.id, 'rb1');
+});
+
+test('an optimal lineup produces no swaps', () => {
+  const players = [{ id: 'qb1', pos: 'QB', points: 20 }];
+  assert.deepEqual(lineupSwaps(players, ['qb1'], [['QB']]), []);
+});
+
+test('week efficiency reports the best legal swap', () => {
+  const players = [
+    { id: 'qb1', pos: 'QB', points: 8 },
+    { id: 'qb2', pos: 'QB', points: 26 },
+    { id: 'wr1', pos: 'WR', points: 12 }
+  ];
+  const week = weekEfficiency({ players, startedIds: ['qb1', 'wr1'], slots: [['QB'], ['WR']] });
+  assert.equal(week.topSwap.in.id, 'qb2');
+  assert.equal(week.topSwap.out.id, 'qb1');
+  assert.equal(week.topSwap.gain, 18);
 });

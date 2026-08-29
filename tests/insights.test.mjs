@@ -8,6 +8,7 @@ import {
   draftLeaderboard,
   normalizeScores,
   reportCard,
+  reportGrade,
   summarizeStints
 } from '../insights.js';
 
@@ -132,4 +133,47 @@ test('ownership weeks collapse into readable stints', () => {
 
 test('an unowned player has no stints', () => {
   assert.deepEqual(summarizeStints([]), []);
+});
+
+test('the report card ranks and grades on standing within the league', () => {
+  const values = new Map([['a', 1], ['b', 0.8], ['c', 0.6], ['d', 0.4], ['e', 0.2]]);
+  const rows = reportCard(['a', 'b', 'c', 'd', 'e'], [{ key: 'k', label: 'K', values }]);
+  assert.equal(rows[0].ownerId, 'a');
+  assert.equal(rows[0].rank, 1);
+  assert.equal(rows[0].percentile, 100);
+  assert.equal(rows[rows.length - 1].percentile, 0);
+});
+
+test('the best manager in the league gets an A, not a B plus', () => {
+  // An undefeated season landing on B+ was the symptom: min-max averaging pulls
+  // every manager toward the middle once several categories are blended.
+  const rows = reportCard(['champ', 'b', 'c', 'd', 'e', 'f'], [
+    { key: 'allplay', label: 'All-play', weight: 2, values: new Map([['champ', 1], ['b', 0.6], ['c', 0.5], ['d', 0.4], ['e', 0.3], ['f', 0.2]]) },
+    { key: 'waiver', label: 'Waivers', weight: 1, values: new Map([['b', 5], ['c', 4]]) }
+  ]);
+  assert.equal(rows[0].ownerId, 'champ');
+  assert.ok(rows[0].overall < 100, 'the raw composite is diluted by a missing category');
+  assert.equal(reportGrade(rows[0].percentile), 'A+', 'but the letter reflects being first');
+});
+
+test('grades span the full range across a league', () => {
+  assert.equal(reportGrade(100), 'A+');
+  assert.equal(reportGrade(50), 'B');
+  assert.equal(reportGrade(0), 'F');
+  assert.equal(reportGrade(null), '—');
+});
+
+test('a one-manager league is not graded on a curve against nobody', () => {
+  const rows = reportCard(['solo'], [{ key: 'k', label: 'K', values: new Map([['solo', 1]]) }]);
+  assert.equal(rows[0].percentile, 100);
+});
+
+test('missing data is never treated as a real zero', () => {
+  // Number(null) is 0 and finite, which has bitten this file twice.
+  assert.equal(reportGrade(null), '—');
+  assert.equal(reportGrade(undefined), '—');
+  assert.equal(reportGrade(''), '—');
+  assert.equal(reportGrade(0), 'F', 'a genuine zero still grades');
+  assert.equal(normalizeScores([100, null, 0])[1], 50);
+  assert.equal(normalizeScores([100, '', 0])[1], 50);
 });

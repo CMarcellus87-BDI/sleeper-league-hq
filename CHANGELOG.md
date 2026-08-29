@@ -1,5 +1,57 @@
 # Changelog
 
+## v10.6.0 — accuracy pass
+
+Six reported problems, five of them real bugs rather than tuning.
+
+### Fixed
+- **Draft picks were credited to the wrong manager.** Picks were attributed to
+  the roster that originally owned the draft slot, not the one who actually made
+  the selection, so any traded pick put a player on a team that never drafted
+  him. Picks now use Sleeper's `picked_by`.
+- **Startup drafts were being discarded.** The draft retrospective was reading
+  the pick-lineage map, which deliberately keeps one entry per original slot and
+  prefers the shortest draft in a season. Where a season had both a startup and
+  a rookie draft, every startup pick was thrown away, which is why players like
+  Bijan Robinson were missing entirely. The retrospective now reads a complete
+  record of every pick in every draft.
+- **Startup and rookie picks were graded against each other.** Round baselines
+  pooled every draft, so startup picks looked like steals and rookie picks like
+  reaches. Each pick is now graded against its own round in its own draft, and
+  the all-seasons option is gone because comparing across drafts compares
+  different things.
+- **Start/sit calls suggested impossible swaps** like benching a quarterback for
+  a receiver. The best benched scorer and the worst starter were being paired
+  without checking whether any slot would take both. A swap is now only offered
+  when a slot in that league admits both players, so superflex leagues still get
+  the quarterback swap and 1QB leagues never do.
+- **Waiver history vanished on any cached season.** The transaction cache stored
+  trades only, so every cache hit silently dropped the claims fetched alongside
+  them. Cache now holds both; the key is bumped to v3.
+- **The versus badge between the head-to-head dropdowns had no styles at all**
+  and sat wherever the grid left it.
+
+### Changed
+- **A market grade is no longer shown when part of the trade could not be
+  priced.** Trading away a player whose counter-asset returned no value read as
+  a total loss and graded F, when the truth was that the service had no price
+  for it. Those show "—" with a count of the unpriced assets.
+- **The report card grades on standing within the league.** Min-max normalising
+  every category and averaging pulls everyone toward the middle, so an
+  undefeated season landed on B+. The letter now comes from rank, so the best
+  manager gets an A.
+- **Luck is no longer scored.** It is not a skill, and grading it down punished
+  the manager who won. It is reported next to the grade as context instead.
+- Waiver Returns states which seasons Sleeper actually exposes transactions for,
+  rather than offering a filter it cannot honour.
+
+### Added
+- `lineupSwaps` and `reportGrade`, with 10 tests including the exact
+  quarterback-for-receiver case. Suite is now 237.
+- A shared `toNumberOrNull` helper in `insights.js`. `Number(null)` is `0` and
+  finite, which caused the same class of bug twice: a manager with no waiver
+  claims scoring worst, and a missing percentile grading F.
+
 ## v10.5.0 — league hero cards
 
 My Leagues was a list. It is now a set of hero cards, each a real entry point

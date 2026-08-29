@@ -18,7 +18,7 @@ import {
   surplusValue,
   rosterCrunchCost,
   realizedSettledShare
-} from './analytics.js?v=10.5.0';
+} from './analytics.js?v=10.6.0';
 import {
   optimalLineup,
   weekEfficiency,
@@ -27,13 +27,13 @@ import {
   luckIndex,
   scheduleSwap,
   coachingRecord
-} from './efficiency.js?v=10.5.0';
+} from './efficiency.js?v=10.6.0';
 import {
   detectScoringFormat,
   describeScoring,
   nflversePoints,
   formatMatchesSource
-} from './scoring.js?v=10.5.0';
+} from './scoring.js?v=10.6.0';
 import {
   avatarUrl as leagueAvatarUrl,
   playoffPicture,
@@ -47,7 +47,7 @@ import {
   summarizeLeagueForUser,
   sortLeagueSummaries,
   aggregateLeagueSummaries
-} from './league.js?v=10.5.0';
+} from './league.js?v=10.6.0';
 import {
   NAV,
   DEFAULT_ROUTE,
@@ -56,13 +56,13 @@ import {
   resolveRoute,
   routeHash,
   itemsForGroup
-} from './routing.js?v=10.5.0';
+} from './routing.js?v=10.6.0';
 import {
   powerRankings,
   managerActivity,
   countEmptySlots,
   countZeroStarters
-} from './pulse.js?v=10.5.0';
+} from './pulse.js?v=10.6.0';
 import {
   aggregateUsage,
   mergeSnapCounts,
@@ -70,13 +70,13 @@ import {
   risingUsage,
   fadingUsage,
   crossReferenceTrending
-} from './usage.js?v=10.5.0';
+} from './usage.js?v=10.6.0';
 import {
   makeRng,
   scoringProfile,
   leagueScoringProfile,
   simulatePlayoffOdds
-} from './simulation.js?v=10.5.0';
+} from './simulation.js?v=10.6.0';
 import {
   waiverLeaderboard,
   waiverExtremes,
@@ -84,8 +84,9 @@ import {
   gradeDraftPicks,
   draftLeaderboard,
   reportCard,
+  reportGrade,
   summarizeStints
-} from './insights.js?v=10.5.0';
+} from './insights.js?v=10.6.0';
 import {
   buildNameIndex,
   matchRankings,
@@ -95,7 +96,7 @@ import {
   arbitrageThresholds,
   matchProjections,
   startSitAdvice
-} from './fantasypros.js?v=10.5.0';
+} from './fantasypros.js?v=10.6.0';
 
 // Optional local overrides. `config.local.js` is gitignored and excluded from
 // release archives, so settings survive upgrades and never reach the repo.
@@ -113,7 +114,7 @@ const CONFIG = {
   maxHistorySeasons: 20,
   maxWeeksPerSeason: 18,
   matchupConcurrency: 4,
-  version: '10.5.0',
+  version: '10.6.0',
   valueApiBase: 'https://api.statsguyfantasy.com/api/v1',
   // Deployed proxy that holds the FantasyPros key. Empty disables ECR features.
   // See worker/fantasypros-proxy.js for the Cloudflare Worker, or api/ for Vercel.
@@ -190,6 +191,8 @@ const state = {
   sleeperUser: null,
   leaguesMessage: null,
   discoveredLeagues: [],
+  draftPicksBySeason: new Map(),
+  draftSeason: null,
   chainMode: false,
   lineageReady: false,
   lineagePromise: null,
@@ -548,6 +551,34 @@ async function loadDraftResolutionsForSeason(season){
       ]);
       const slotMap=detail?.slot_to_roster_id||draft?.slot_to_roster_id||{};
       const rounds=Number(detail?.settings?.rounds||draft?.settings?.rounds||99);
+      // The retrospective needs every pick from every draft, credited to
+      // whoever actually made it. The resolution map below is a different
+      // thing: it answers "what did this future pick become" and deliberately
+      // keeps one entry per original slot.
+      const draftType=String(detail?.type||draft?.type||'').toLowerCase();
+      const isRookie=Number(rounds)<=6||draftType==='rookie';
+      const seasonPicks=state.draftPicksBySeason.get(seasonKey)||[];
+      for(const pick of (Array.isArray(picks)?picks:[])){
+        if(!pick?.player_id)continue;
+        seasonPicks.push({
+          season:String(detail?.season||draft?.season||item.league.season),
+          draftId:draft.draft_id,
+          draftLabel:isRookie?'Rookie draft':'Startup draft',
+          isRookie,
+          rounds:Number(rounds)||null,
+          round:Number(pick.round)||null,
+          pickNo:Number(pick.pick_no)||null,
+          slot:Number(pick.draft_slot||0),
+          playerId:String(pick.player_id),
+          // picked_by is the user who actually made the selection. Crediting
+          // the original draft slot instead assigns traded picks to the wrong
+          // manager, which is what put players on teams that never drafted them.
+          pickedBy:pick.picked_by||null,
+          rosterId:Number(pick.roster_id)||null
+        });
+      }
+      state.draftPicksBySeason.set(seasonKey,seasonPicks);
+
       for(const pick of (Array.isArray(picks)?picks:[])){
         const slot=Number(pick.draft_slot||0);
         const originalRoster=Number(slotMap[String(slot)]||0);
@@ -584,10 +615,17 @@ async function loadTradeIndexForSeason(season){
   if(state.tradesBySeason.has(seasonKey))return state.tradesBySeason.get(seasonKey);
   if(state.tradePromisesBySeason.has(`index:${seasonKey}`))return state.tradePromisesBySeason.get(`index:${seasonKey}`);
   const item=tradeSeasonItem(seasonKey);if(!item){state.tradesBySeason.set(seasonKey,[]);return[];}
-  const cacheKey=`dol:tx:${item.league.league_id}:v2`;
+  const cacheKey=`dol:tx:${item.league.league_id}:v3`;
   const isCurrent=String(state.league?.season)===seasonKey;
   const cached=cacheGet(cacheKey,isCurrent?5*60*1000:30*24*60*60*1000);
-  if(Array.isArray(cached)){const txs=cached.map(t=>({...t,season:item.league.season,item}));state.tradesBySeason.set(seasonKey,txs);memo.dropIndex=null;state.lineageByTrade.clear();return txs;}
+  // The cache used to store trades only, so every cache hit silently dropped
+  // the waiver claims and the Waiver Returns tab came back empty for any season
+  // that had been loaded before.
+  if(cached&&Array.isArray(cached.txs)){
+    const txs=cached.txs.map(t=>({...t,season:item.league.season,item}));
+    state.waiversBySeason.set(seasonKey,(cached.claims||[]).map(c=>({...c,item})));
+    state.tradesBySeason.set(seasonKey,txs);memo.dropIndex=null;state.lineageByTrade.clear();return txs;
+  }
   const promise=(async()=>{
     const rounds=Array.from({length:CONFIG.maxWeeksPerSeason+1},(_,i)=>i);
     let cursor=0;const found=new Map(),claims=[];
@@ -602,7 +640,7 @@ async function loadTradeIndexForSeason(season){
       });}});
     await Promise.all(workers);
     const txs=[...found.values()].sort((a,b)=>Number(b.created||0)-Number(a.created||0));
-    cacheSet(cacheKey,txs.map(({item:drop,...rest})=>rest));
+    cacheSet(cacheKey,{txs:txs.map(({item:drop,...rest})=>rest),claims:claims.map(({item:drop,...rest})=>rest)});
     state.waiversBySeason.set(seasonKey,claims);
     state.tradesBySeason.set(seasonKey,txs);memo.dropIndex=null;state.lineageByTrade.clear();return txs;
   })().finally(()=>state.tradePromisesBySeason.delete(`index:${seasonKey}`));
@@ -764,6 +802,26 @@ function tradeChrono(t){
   const season=Number(t.season||t.item?.league?.season||0);
   const week=Number(t.leg);
   return{season,week:Number.isFinite(week)&&week>0?week:null};
+}
+/**
+ * How much of one side of a trade the value service could actually price.
+ *
+ * When a pick or player comes back at zero, the edge calculation treats that
+ * side as having received nothing, which produces an F for a deal that was
+ * merely unpriceable. Counting the gaps lets the grade say "unknown" instead.
+ */
+function unpricedAssets(t,rid){
+  let unpriced=0,total=0;
+  Object.entries(t.adds||{}).filter(([,r])=>Number(r)===Number(rid)).forEach(([pid])=>{
+    total++;if(!(marketValueForPlayer(pid)>0))unpriced++;
+  });
+  (t.draft_picks||[]).filter(p=>Number(p.owner_id)===Number(rid)).forEach(p=>{
+    total++;
+    const resolved=resolvedPick(p);
+    const value=resolved?.playerId?marketValueForPlayer(resolved.playerId):marketValueForPick(p.season,p.round);
+    if(!(value>0))unpriced++;
+  });
+  return{unpriced,total};
 }
 function receivedForPoints(t,rid){
   const playerIds=[],assets=[];
@@ -972,10 +1030,18 @@ function realizedCellHtml(realized,rid){
   }
   return `<div><span>SINCE TRADE</span><strong>${gradeLetter(side.edge)}</strong><small>${points.toFixed(1)} started pts${settledText}</small></div>`;
 }
-function tradeGradeHtml(g,rid,realized){
+function tradeGradeHtml(g,rid,realized,trade){
   const cells=[];
   if(g){
     const isA=Number(rid)===Number(g.aRoster);
+    // A side whose assets could not be priced has no meaningful market grade.
+    const gaps=trade?unpricedAssets(trade,rid):{unpriced:0,total:0};
+    const otherRid=(trade?.roster_ids||[]).find(r=>Number(r)!==Number(rid));
+    const otherGaps=trade&&otherRid!=null?unpricedAssets(trade,otherRid):{unpriced:0,total:0};
+    if(gaps.unpriced||otherGaps.unpriced){
+      const which=gaps.unpriced?'this side':'the other side';
+      return `<div class="grade-strip grade-strip-single"><div><span>MARKET GRADE</span><strong>—</strong><small>${gaps.unpriced+otherGaps.unpriced} asset${gaps.unpriced+otherGaps.unpriced===1?'':'s'} on ${which} could not be priced</small></div></div>${realizedCellHtml(realized,rid)?`<div class="grade-strip grade-strip-single">${realizedCellHtml(realized,rid)}</div>`:''}`;
+    }
     if(g.then)cells.push(`<div><span>THEN</span><strong>${gradeLetter(isA?g.then.aEdge:g.then.bEdge)}</strong><small>Market grade when dealt</small></div>`);
     if(g.now)cells.push(`<div><span>NOW</span><strong>${gradeLetter(isA?g.now.aEdge:g.now.bEdge)}</strong><small>Value of the assets today</small></div>`);
   }
@@ -1057,7 +1123,7 @@ function renderTrades(){
   const filter=$('trade-season').value||String(state.league?.season||''),txs=filter==='all'?[...state.tradesBySeason.values()].flat():state.tradesBySeason.get(String(filter))||[];
   const activity=new Map();let picks=0;txs.forEach(t=>{(t.roster_ids||[]).forEach(r=>{const n=rosterTradeIdentity(t.item,r);activity.set(n,(activity.get(n)||0)+1);});picks+=(t.draft_picks||[]).length;});const active=[...activity.entries()].sort((a,b)=>b[1]-a[1])[0],biggest=[...txs].sort((a,b)=>tradeAssetCount(b)-tradeAssetCount(a))[0],grades=filter==='all'?null:state.tradeGradesBySeason.get(String(filter));
   $('trade-count').textContent=txs.length;$('trade-most-active').textContent=active?.[0]||'—';$('trade-most-active-detail').textContent=active?`${active[1]} trades involved`:'—';$('trade-biggest').textContent=biggest?tradeAssetCount(biggest):'—';$('trade-picks').textContent=picks;if(grades)renderTradeAwards(txs,grades);else $('trade-awards').classList.add('hidden');
-  $('trade-list').innerHTML=txs.length?txs.map(t=>{const ids=t.roster_ids||[],g=grades?.get(t.transaction_id),realized=tradeOutcomeSummary(t),date=t.created?new Date(Number(t.created)).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}):`${t.season} W${t.leg||'?'}`;return `<article class="trade-card" id="trade-${escapeHtml(t.transaction_id)}"><div class="trade-card-head"><div><span>${escapeHtml(t.season)} • Week ${t.leg??'—'}</span><strong>${escapeHtml(date)}</strong></div><b>${tradeAssetCount(t)} assets</b></div><div class="trade-sides">${ids.map((rid,i)=>{const assets=tradeAssets(t,rid);return `<div class="trade-side"><h3>${escapeHtml(rosterTradeIdentity(t.item,rid))}</h3>${tradeGradeHtml(g,rid,realized)}<span class="received-label">RECEIVED</span>${assets.length?assets.map(a=>`<div class="asset ${a.type}"><span>${a.type.includes('pick')?'◇':a.type==='faab'?'$':'●'}</span><div><strong>${escapeHtml(a.label)}</strong><small>${escapeHtml(a.meta||'')}</small></div></div>`).join(''):'<div class="asset empty"><div><strong>No mapped incoming assets</strong><small>Sleeper transaction metadata may be incomplete.</small></div></div>'}${chainButtonHtml(t,rid,realized)}${(t.draft_picks||[]).some(p=>Number(p.owner_id)===Number(rid)&&resolvedPick(p))?`<button type="button" class="trace-button" data-trace-id="${escapeHtml(t.transaction_id)}" data-trace-roster="${rid}">Trace what it became →</button><div class="lineage-box hidden" id="trace-${escapeHtml(t.transaction_id)}-${rid}"></div>`:''}</div>${i<ids.length-1?'<div class="trade-arrow">⇄</div>':''}`;}).join('')}</div></article>`;}).join(''):`<article class="panel empty-cell">No completed trades found for ${escapeHtml(filter==='all'?'the loaded seasons':filter)}.</article>`;
+  $('trade-list').innerHTML=txs.length?txs.map(t=>{const ids=t.roster_ids||[],g=grades?.get(t.transaction_id),realized=tradeOutcomeSummary(t),date=t.created?new Date(Number(t.created)).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}):`${t.season} W${t.leg||'?'}`;return `<article class="trade-card" id="trade-${escapeHtml(t.transaction_id)}"><div class="trade-card-head"><div><span>${escapeHtml(t.season)} • Week ${t.leg??'—'}</span><strong>${escapeHtml(date)}</strong></div><b>${tradeAssetCount(t)} assets</b></div><div class="trade-sides">${ids.map((rid,i)=>{const assets=tradeAssets(t,rid);return `<div class="trade-side"><h3>${escapeHtml(rosterTradeIdentity(t.item,rid))}</h3>${tradeGradeHtml(g,rid,realized,t)}<span class="received-label">RECEIVED</span>${assets.length?assets.map(a=>`<div class="asset ${a.type}"><span>${a.type.includes('pick')?'◇':a.type==='faab'?'$':'●'}</span><div><strong>${escapeHtml(a.label)}</strong><small>${escapeHtml(a.meta||'')}</small></div></div>`).join(''):'<div class="asset empty"><div><strong>No mapped incoming assets</strong><small>Sleeper transaction metadata may be incomplete.</small></div></div>'}${chainButtonHtml(t,rid,realized)}${(t.draft_picks||[]).some(p=>Number(p.owner_id)===Number(rid)&&resolvedPick(p))?`<button type="button" class="trace-button" data-trace-id="${escapeHtml(t.transaction_id)}" data-trace-roster="${rid}">Trace what it became →</button><div class="lineage-box hidden" id="trace-${escapeHtml(t.transaction_id)}-${rid}"></div>`:''}</div>${i<ids.length-1?'<div class="trade-arrow">⇄</div>':''}`;}).join('')}</div></article>`;}).join(''):`<article class="panel empty-cell">No completed trades found for ${escapeHtml(filter==='all'?'the loaded seasons':filter)}.</article>`;
   $('trades-loading').classList.add('hidden');$('trades-content').classList.remove('hidden');bindTraceButtons();bindChainButtons();bindTradeAwardJumps();
 }
 async function loadSelectedTradeSeason(){
@@ -1804,25 +1870,42 @@ function waiverRows(){
   }
   return rows;
 }
-function draftRows(){
+/**
+ * Draft picks for one season, credited to whoever actually made the selection.
+ *
+ * Startup and rookie drafts are kept apart. A startup first-rounder and a rookie
+ * first-rounder are not the same asset, and pooling them made every startup pick
+ * look like a steal and every rookie pick a reach.
+ */
+function draftRows(season){
   const index=state.archive?.playerIndex;
-  if(!index)return[];
+  const key=String(season||'');
+  if(!index||!key)return[];
   const names=ownerNameMap();
+  const item=tradeSeasonItem(key);
+  const picks=state.draftPicksBySeason.get(key)||[];
   const rows=[];
-  for(const [key,resolution] of state.draftResolutions.entries()){
-    const season=String(resolution.season);
-    if(state.labSeason!=='all'&&season!==state.labSeason)continue;
-    const item=tradeSeasonItem(season);
-    const ownerId=item?tradeOwnerId(item,resolution.originalRoster):null;
-    if(!ownerId||!resolution.playerId)continue;
-    const totals=realizedForSide(index,[String(resolution.playerId)],ownerId,Number(season),null);
-    rows.push({ownerId,manager:names[ownerId]||ownerId,season,round:resolution.round,slot:resolution.slot,
-      playerId:resolution.playerId,name:resolution.playerName||playerInfo(resolution.playerId).name,points:totals.started});
+  for(const pick of picks){
+    const ownerId=pick.pickedBy||(item&&pick.rosterId?tradeOwnerId(item,pick.rosterId):null);
+    if(!ownerId)continue;
+    const totals=realizedForSide(index,[String(pick.playerId)],ownerId,Number(key),null);
+    rows.push({
+      ownerId,manager:names[ownerId]||ownerId,season:key,
+      draftId:pick.draftId,draftLabel:pick.draftLabel,isRookie:pick.isRookie,
+      round:pick.round,pickNo:pick.pickNo,
+      playerId:pick.playerId,name:playerInfo(pick.playerId).name,
+      points:totals.started
+    });
   }
   return rows;
 }
 function renderLabWaivers(){
   const rows=waiverRows();
+  const seasons=[...state.waiversBySeason.keys()].filter(k=>(state.waiversBySeason.get(k)||[]).length);
+  const note=$('waiver-note');
+  if(note)note.textContent=seasons.length
+    ?`Claims loaded for ${seasons.sort((a,b)=>Number(a)-Number(b)).join(', ')}. Sleeper only exposes transactions for seasons this league has played, so earlier years may be unavailable.`
+    :'No waiver transactions available for this league.';
   if(!rows.length){$('lab-waivers').innerHTML='<div class="empty-cell">No waiver claims found in this range.</div>';$('lab-waiver-extremes').innerHTML='';return;}
   const board=waiverLeaderboard(rows),{hits,busts}=waiverExtremes(rows);
   $('lab-waivers').innerHTML=`<div class="table-wrap"><table><thead><tr><th>#</th><th>Manager</th><th>Claims</th><th>FAAB Spent</th><th>Points</th><th>Pts / $</th><th>Best Pickup</th></tr></thead><tbody>${board.map((r,i)=>`<tr><td class="rank">${i+1}</td><td><strong>${escapeHtml(r.manager)}</strong></td><td>${r.claims}</td><td>$${Math.round(r.spend)}</td><td>${r.points.toFixed(1)}</td><td class="gold-score">${r.pointsPerDollar!=null?r.pointsPerDollar.toFixed(1):'—'}</td><td>${r.best?escapeHtml(r.best.name):'—'}</td></tr>`).join('')}</tbody></table></div>`;
@@ -1849,17 +1932,21 @@ function renderLabReportCard(){
   if(!ownerIds.length){$('lab-report').innerHTML='<div class="empty-cell">Not enough history yet.</div>';return;}
   const map=(rows,key)=>new Map(rows.map(r=>[r.ownerId,r[key]]));
   const coachMap=new Map([...coaching.values()].map(r=>[r.ownerId,r.actualWins-r.optimalWins]));
+  // Luck is deliberately not scored. It is not a skill, and grading it down
+  // punished the manager who won. It is reported next to the grade instead.
   const cards=reportCard(ownerIds,[
+    {key:'allplay',label:'All-play win rate',weight:3,values:map(luck,'allPlayPct')},
     {key:'eff',label:'Lineup efficiency',weight:2,values:map(eff,'efficiency')},
-    {key:'allplay',label:'All-play win rate',weight:2.5,values:map(luck,'allPlayPct')},
     {key:'coach',label:'Coaching (games not thrown)',weight:1,values:coachMap},
-    {key:'waiver',label:'Waiver return',weight:1,values:map(waivers,'pointsPerDollar')},
     {key:'draft',label:'Draft value per pick',weight:1.5,values:map(drafts,'deltaPerPick')},
-    {key:'luck',label:'Luck (lower is better)',weight:0.5,higherIsBetter:false,values:map(luck,'luck')}
+    {key:'waiver',label:'Waiver return',weight:1,values:map(waivers,'pointsPerDollar')}
   ]);
   const names=scope.names;
-  const grade=score=>score>=85?'A+':score>=75?'A':score>=65?'B+':score>=55?'B':score>=45?'C+':score>=35?'C':score>=25?'D':'F';
-  $('lab-report').innerHTML=cards.map((row,i)=>`<article class="report-card"><div class="report-head"><div><span>#${i+1}</span><strong>${escapeHtml(names[row.ownerId]||row.ownerId)}</strong></div><b>${grade(row.overall)}</b></div><div class="report-bars">${row.breakdown.map(b=>`<div class="report-bar"><small>${escapeHtml(b.label)}${b.missing?' (no data)':''}</small><div class="window-bar"><i style="width:${Math.max(2,Math.min(100,b.score))}%"></i></div><em>${Math.round(b.score)}</em></div>`).join('')}</div></article>`).join('');
+  const luckById=new Map(luck.map(r=>[r.ownerId,r.luck]));
+  $('lab-report').innerHTML=cards.map(row=>{
+    const fortune=luckById.get(row.ownerId);
+    return `<article class="report-card"><div class="report-head"><div><span>#${row.rank}</span><strong>${escapeHtml(names[row.ownerId]||row.ownerId)}</strong></div><b>${reportGrade(row.percentile)}</b></div>${fortune!=null?`<p class="report-luck">${fortune>0?'+':''}${fortune.toFixed(1)} wins vs all-play — ${fortune>1?'the schedule helped':fortune<-1?'the schedule did not':'a fair schedule'}</p>`:''}<div class="report-bars">${row.breakdown.map(b=>`<div class="report-bar"><small>${escapeHtml(b.label)}${b.missing?' (no data)':''}</small><div class="window-bar"><i style="width:${Math.max(2,Math.min(100,b.score))}%"></i></div><em>${Math.round(b.score)}</em></div>`).join('')}</div></article>`;
+  }).join('');
 }
 async function showLabTab(tab){
   state.labTab=tab;
@@ -2065,7 +2152,7 @@ function renderLab(){
   $('lab-efficiency').innerHTML=eff.length?eff.map((r,i)=>`<tr><td class="rank big-rank">${i+1}</td><td><strong>${escapeHtml(r.manager)}</strong></td><td class="gold-score">${(r.efficiency*100).toFixed(1)}%</td><td>${r.left.toFixed(1)}</td><td>${r.leftPerWeek.toFixed(1)}</td><td>${r.perfect}</td><td>${r.weeks}</td></tr>`).join(''):'<tr><td colspan="7" class="empty-cell">No scored weeks in this range.</td></tr>';
 
   const worst=[...scope.teamWeeks].sort((a,b)=>b.left-a.left).slice(0,8);
-  $('lab-blunders').innerHTML=worst.length?worst.map((r,i)=>`<div class="rank-row"><span>${i+1}</span><div><strong>${escapeHtml(r.manager)}</strong><small>${r.season} W${r.week}${r.topMiss?` • benched ${escapeHtml(playerInfo(r.topMiss.id).name)} (${r.topMiss.points.toFixed(1)})${r.topMissReplaced?` for ${escapeHtml(playerInfo(r.topMissReplaced.id).name)} (${r.topMissReplaced.points.toFixed(1)})`:''}`:''}</small></div><b>−${r.left.toFixed(1)}</b></div>`).join(''):'<div class="empty-cell">Nothing to see here.</div>';
+  $('lab-blunders').innerHTML=worst.length?worst.map((r,i)=>`<div class="rank-row"><span>${i+1}</span><div><strong>${escapeHtml(r.manager)}</strong><small>${r.season} W${r.week}${r.topSwap?` • started ${escapeHtml(playerInfo(r.topSwap.out.id).name)} (${r.topSwap.out.points.toFixed(1)}) over ${escapeHtml(playerInfo(r.topSwap.in.id).name)} (${r.topSwap.in.points.toFixed(1)}) at ${escapeHtml(r.topSwap.slot.join('/'))}`:''}</small></div><b>−${r.left.toFixed(1)}</b></div>`).join(''):'<div class="empty-cell">Nothing to see here.</div>';
 
   $('lab-luck').innerHTML=luck.length?luck.map(r=>`<tr><td><strong>${escapeHtml(r.manager)}</strong></td><td>${r.wins}-${r.losses}</td><td>${r.allPlayWins}-${r.allPlayLosses}</td><td>${pct(r.allPlayPct)}</td><td>${r.expectedWins.toFixed(1)}</td><td class="${r.luck>=0?'luck-good':'luck-bad'}">${r.luck>0?'+':''}${r.luck.toFixed(1)}</td></tr>`).join(''):'<tr><td colspan="6" class="empty-cell">No completed games in this range.</td></tr>';
 

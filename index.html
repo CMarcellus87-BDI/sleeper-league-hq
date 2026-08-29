@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800;900&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=10.5.0" />
+  <link rel="stylesheet" href="styles.css?v=10.6.0" />
 </head>
 <body>
   <div class="app-shell">
@@ -187,7 +187,7 @@
         <div id="h2h-loading" class="inline-status hidden"><span class="spinner"></span>Loading historical matchups…</div>
         <div id="h2h-matchups-mode">
         <div class="matchup-selectors">
-          <label>Manager A<select id="h2h-a"></select></label><div class="versus-badge">VS</div><label>Manager B<select id="h2h-b"></select></label>
+          <label>Manager A<select id="h2h-a"></select></label><div class="versus-badge"><span>VS</span></div><label>Manager B<select id="h2h-b"></select></label>
         </div>
         <div class="h2h-scoreboard">
           <div class="h2h-side"><span id="h2h-a-label">Manager A</span><strong id="h2h-a-wins">—</strong><small>wins</small></div>
@@ -218,11 +218,13 @@
           <div id="lab-waivers-panel" class="lab-panel hidden">
             <article class="panel"><div class="panel-head"><div><p class="eyebrow">FAAB</p><h2>Waiver Returns</h2></div></div>
             <p class="assistant-note">Points produced in the starting lineup after each claim, against what it cost. Free claims count toward totals but are excluded from the per-dollar figure.</p>
+            <p class="assistant-note" id="waiver-note"></p>
             <div id="lab-waivers"></div><div id="lab-waiver-extremes"></div></article>
           </div>
           <div id="lab-drafts-panel" class="lab-panel hidden">
-            <article class="panel"><div class="panel-head"><div><p class="eyebrow">THE DRAFT</p><h2>Retrospective</h2></div></div>
-            <p class="assistant-note">Every resolved pick graded against what that round has actually returned in this league, so a fourth-round hit is credited properly against a first-round one.</p>
+            <article class="panel"><div class="panel-head"><div><p class="eyebrow">THE DRAFT</p><h2>Retrospective</h2></div><label class="select-label">Season<select id="draft-season" aria-label="Draft season"></select></label></div>
+            <p class="assistant-note">Every pick graded against what its own round returned in its own draft, credited to whoever actually made the selection. Startup and rookie drafts are kept apart, since a startup first and a rookie first are not the same asset.</p>
+            <p class="assistant-note" id="draft-note"></p>
             <div id="lab-drafts"></div><div id="lab-draft-extremes"></div></article>
           </div>
           <div id="lab-report-panel" class="lab-panel hidden">
@@ -349,9 +351,9 @@
         <div id="season-explorer-content" class="explorer-grid"><div class="loading-line"></div></div>
       </section>
 
-      <footer><span>DYNASTY OF LEGENDS</span><i>◆</i><span>POWERED BY SLEEPER DATA · BUILD v10.5.0 · LEAGUE HERO CARDS</span></footer>
+      <footer><span>DYNASTY OF LEGENDS</span><i>◆</i><span>POWERED BY SLEEPER DATA · BUILD v10.6.0</span></footer>
     </main>
   </div>
-  <script type="module" src="app.js?v=10.5.0"></script>
+  <script type="module" src="app.js?v=10.6.0"></script>
 </body>
 </html>

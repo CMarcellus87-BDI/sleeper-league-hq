@@ -358,3 +358,12 @@
 .league-links{display:flex;flex-wrap:wrap;gap:5px;margin-top:11px;padding-top:10px;border-top:1px solid #1a2227}
 .league-link{appearance:none;cursor:pointer;padding:5px 9px;border:1px solid #2b363c;border-radius:7px;background:#0d1317;color:#8c9688;font:700 7px Inter,sans-serif;letter-spacing:.08em;text-transform:uppercase}
 .league-link:hover{border-color:#806a32;color:#e0c36d}
+
+/* The versus badge had no styles at all, so it sat wherever the grid left it.
+   Matching the select height and centring inside lines it up with the fields. */
+.versus-badge{display:flex;align-items:center;justify-content:center;align-self:end;height:41px}
+.versus-badge span{display:flex;align-items:center;justify-content:center;width:34px;height:34px;border:1px solid #2b363c;border-radius:50%;background:#0d1317;color:#806a32;font:800 9px Inter,sans-serif;letter-spacing:.06em}
+@media(max-width:700px){.versus-badge{height:auto;align-self:center;margin:2px 0}}
+.draft-note{color:#69747a;font-size:8px}
+
+.report-luck{margin:2px 0 8px;color:#8c9688;font-size:8px}
