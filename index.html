@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800;900&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=9.0.0" />
+  <link rel="stylesheet" href="styles.css?v=10.0.0" />
 </head>
 <body>
   <div class="app-shell">
@@ -17,18 +17,8 @@
         <img class="crest" src="dynasty-crest.svg" alt="Dynasty of Legends crest" />
         <div class="brand-copy"><strong>Dynasty of Legends</strong><span>League Archive</span></div>
       </div>
-      <nav id="nav" class="nav" aria-label="League navigation">
-        <button class="nav-item active" data-view="overview"><span class="nav-icon">⌂</span><span>Home</span></button>
-        <button class="nav-item" data-view="standings"><span class="nav-icon">≡</span><span>Standings</span></button>
-        <button class="nav-item" data-view="history"><span class="nav-icon">♛</span><span>History</span></button>
-        <button class="nav-item" data-view="franchises"><span class="nav-icon">★</span><span>Legends</span></button>
-        <button class="nav-item" data-view="trades"><span class="nav-icon">⇄</span><span>Trades</span></button>
-        <button class="nav-item" data-view="tradelab"><span class="nav-icon">⚖</span><span>Trade Lab</span></button>
-        <button class="nav-item" data-view="assistant"><span class="nav-icon">✦</span><span>Assistant</span></button>
-        <button class="nav-item" data-view="headtohead"><span class="nav-icon">⚔</span><span>H2H</span></button>
-        <button class="nav-item" data-view="lab"><span class="nav-icon">🔬</span><span>Manager Lab</span></button><button class="nav-item" data-view="odds"><span class="nav-icon">◎</span><span>Odds</span></button><button class="nav-item" data-view="players"><span class="nav-icon">☰</span><span>Players</span></button><button class="nav-item" data-view="records"><span class="nav-icon">↗</span><span>Records</span></button>
-        <button class="nav-item" data-view="season"><span class="nav-icon">◫</span><span>Seasons</span></button>
-      </nav>
+      <nav id="nav" class="nav" aria-label="League sections"></nav>
+        <div id="subnav" class="subnav" role="tablist" aria-label="Section pages"></div>
       <div class="motto"><span class="motto-crown">♛</span><strong>Legends are drafted.<br>Dynasties are built.</strong></div>
       <div class="api-state"><span id="api-dot" class="status-dot loading"></span><span id="api-status">Connecting to Sleeper</span></div>
     </aside>
@@ -182,6 +172,7 @@
             <article class="panel"><div class="panel-head"><div><p class="eyebrow">TRADE PARTNERS</p><h2>Suggested Frameworks</h2></div></div><p class="assistant-note">Ranked by positional fit, market balance and how well the two franchises’ competitive windows oppose each other. These are conversation starters, not commandments.</p><div id="assistant-trades" class="assistant-list"></div></article>
             <article class="panel"><div class="panel-head"><div><p class="eyebrow">FREE AGENCY</p><h2>Available Upgrades</h2></div></div><p class="assistant-note">Compares unrostered players with eligible bench assets at the same position. Taxi, starters and reserve are protected from cut suggestions.</p><div id="assistant-free-agents" class="assistant-list"></div></article>
           </div>
+          <div id="assistant-trending"></div>
           <div id="assistant-startsit"></div>
           <div id="assistant-ecr"></div>
           <article class="panel assistant-cuts-panel"><div class="panel-head"><div><p class="eyebrow">ROSTER BUBBLE</p><h2>Cut Candidates</h2></div></div><p class="assistant-note">Lowest-value eligible bench assets. A low value is a flag to review, not an instruction to drop a player.</p><div id="assistant-cuts" class="cut-list"></div></article>
@@ -222,12 +213,6 @@
         <div class="section-banner responsive-head"><div><p class="eyebrow gold">THE RECEIPTS</p><h2>Manager Lab</h2><p>Every lineup this league has ever set, replayed. Who actually manages well, who has been carried by the schedule, and which losses were self-inflicted.</p></div><label class="select-label">Season<select id="lab-season" aria-label="Manager Lab season"><option value="all">All seasons</option></select></label></div>
         <div id="lab-loading" class="inline-status hidden"><span class="spinner"></span>Replaying every lineup in league history…</div>
         <div id="lab-content" class="hidden">
-          <div class="records-toolbar">
-            <button type="button" class="record-tab lab-tab active" data-lab-tab="efficiency">Efficiency &amp; Luck</button>
-            <button type="button" class="record-tab lab-tab" data-lab-tab="waivers">Waiver Returns</button>
-            <button type="button" class="record-tab lab-tab" data-lab-tab="drafts">Draft Retrospective</button>
-            <button type="button" class="record-tab lab-tab" data-lab-tab="report">Report Card</button>
-          </div>
           <div id="lab-tab-loading" class="inline-status hidden"></div>
           <div id="lab-waivers-panel" class="lab-panel hidden">
             <article class="panel"><div class="panel-head"><div><p class="eyebrow">FAAB</p><h2>Waiver Returns</h2></div></div>
@@ -275,6 +260,23 @@
         </div>
       </section>
 
+      <section id="pulse-view" class="view">
+        <div class="section-banner responsive-head"><div><p class="eyebrow gold">WHO IS ACTUALLY GOOD</p><h2>League Pulse</h2><p>Power rankings built from all-play record rather than standings, so schedule luck does not decide who looks strong. Plus who is still setting their lineup.</p></div><label class="select-label">Season<select id="pulse-season" aria-label="Power rankings season"></select></label></div>
+        <div id="pulse-loading" class="inline-status hidden"><span class="spinner"></span>Reading the league pulse…</div>
+        <div id="pulse-content" class="hidden">
+          <article class="panel">
+            <div class="panel-head"><div><p class="eyebrow">POWER RANKINGS</p><h2>The Board</h2></div></div>
+            <div class="table-wrap"><table><thead><tr><th>#</th><th>Move</th><th>Manager</th><th>Score</th><th>All-Play</th><th>Recent</th><th>Roster</th></tr></thead><tbody id="pulse-rankings"></tbody></table></div>
+            <p class="assistant-note" id="pulse-note"></p>
+          </article>
+          <article class="panel">
+            <div class="panel-head"><div><p class="eyebrow">ENGAGEMENT</p><h2>Is Everyone Still Here?</h2></div></div>
+            <p class="assistant-note">Evidence, not accusations. An unfilled lineup slot is unambiguous; making no moves is not. A manager with a strong roster who never touches it is set, not gone, so several signals have to agree before anyone is flagged.</p>
+            <div id="pulse-activity"></div>
+          </article>
+        </div>
+      </section>
+
       <section id="odds-view" class="view">
         <div class="section-banner"><div><p class="eyebrow gold">TEN THOUSAND SEASONS</p><h2>Playoff Odds</h2><p>The remaining schedule replayed ten thousand times, sampling each team's weekly score from its own distribution.</p></div></div>
         <div id="odds-loading" class="inline-status hidden"><span class="spinner"></span>Simulating the rest of the season…</div>
@@ -313,9 +315,9 @@
         <div id="season-explorer-content" class="explorer-grid"><div class="loading-line"></div></div>
       </section>
 
-      <footer><span>DYNASTY OF LEGENDS</span><i>◆</i><span>POWERED BY SLEEPER DATA · BUILD v9.0.0 · THE FULL ARCHIVE</span></footer>
+      <footer><span>DYNASTY OF LEGENDS</span><i>◆</i><span>POWERED BY SLEEPER DATA · BUILD v10.0.0</span></footer>
     </main>
   </div>
-  <script type="module" src="app.js?v=9.0.0"></script>
+  <script type="module" src="app.js?v=10.0.0"></script>
 </body>
 </html>

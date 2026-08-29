@@ -37,6 +37,24 @@ npm test
 Tests cover `analytics.js`, which holds the pure scoring and grading math with
 no DOM or network dependencies.
 
+## Navigation
+
+Five sections, grouped by when you would open the app:
+
+| Section | Contains |
+| --- | --- |
+| **Now** | Overview, power rankings, playoff odds, standings |
+| **Team** | Assistant, franchise profiles |
+| **Trades** | Trade archive, Trade Lab |
+| **History** | Champions, head to head, records, season explorer |
+| **Lab** | Efficiency & luck, waiver returns, draft room, report card, player dossiers |
+
+Every destination has a shareable link: `#lab/lab:report` opens the report card
+directly, `#now/odds` opens playoff odds. Back and forward work as expected, and
+bare view names like `#trades` still resolve so older links keep working.
+
+The structure lives in `routing.js`. Adding a view is one line there.
+
 ## What it does
 
 - **Overview / Standings / History** — live league state, linked season history,
@@ -233,6 +251,56 @@ Leaving it empty disables the ECR features cleanly.
 
 **The API key never belongs in this repository.** See `.env.example`.
 
+## League Pulse
+
+Power rankings are built on **all-play record** rather than standings. Record
+folds in schedule luck; all-play scores every team against every other team each
+week and strips it out, which is why it carries the most weight.
+
+| Component | Weight |
+| --- | --- |
+| All-play record | 40% |
+| Recent three-week form | 25% |
+| Roster market value | 25% |
+| Lineup efficiency | 10% |
+
+Every component is displayed next to the score, so the ranking is arguable
+rather than oracular. Week-over-week movement is computed by re-running the same
+ranking with one fewer week, so there is nothing to persist and no way for
+stored history to drift out of sync with the algorithm.
+
+### Engagement signals
+
+The same view reports who is still setting lineups. This is deliberately
+conservative, because wrongly calling someone checked-out is worse than missing
+it:
+
+- An **unfilled lineup slot** is unambiguous and flags on its own.
+- **Making no moves is not evidence.** A strong roster nobody touches belongs to
+  a manager who is set, not gone. Those appear under "quiet but fine".
+- Softer signals must accumulate before anyone is surfaced.
+- The specific evidence is always shown with the conclusion.
+
+## Opportunity data
+
+Usage metrics come from [nflverse](https://github.com/nflverse/nflverse-data),
+which publishes open weekly NFL data as CSV. It requires no key and carries no
+commercial restriction, unlike the ranking and value services.
+
+Two datasets are used: `player_stats` for targets, target share, air yards share
+and WOPR, and `snap_counts` for snap percentage. They are routed through the
+worker rather than fetched directly, because release-asset CORS is not
+guaranteed, the files run to several megabytes, and edge caching means a whole
+league costs one upstream fetch per day.
+
+Players are joined on `gsis_id`, which Sleeper carries and nflverse keys on, so
+this is an exact id match rather than name matching. Snap counts use a different
+id and fall back to name and week.
+
+The point of all this is that opportunity leads production. A player whose snap
+share has gone from 40% to 80% over three weeks is a different asset from one who
+has been at 60% all year, and a season average hides exactly that.
+
 ## Known limits
 
 - Market values come from [Stats Guy Fantasy](https://statsguyfantasy.com) and
@@ -279,6 +347,9 @@ Leaving it empty disables the ECR features cleanly.
 | `fantasypros.js` | ECR name matching and market-vs-expert arbitrage |
 | `simulation.js` | Monte Carlo playoff odds |
 | `insights.js` | Waiver, draft and report card analytics |
+| `usage.js` | nflverse usage metrics and Sleeper trending |
+| `pulse.js` | Power rankings and manager engagement |
+| `routing.js` | Navigation structure and hash routing |
 | `worker/`, `api/` | Proxy that holds the FantasyPros key |
 | `config.local.js` | Your local settings (gitignored, created by setup.ps1) |
 | `styles.css` | All styling |

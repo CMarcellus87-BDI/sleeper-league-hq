@@ -1,5 +1,109 @@
 # Changelog
 
+## v10.0.0 — navigable
+
+Fourteen views had accumulated into a flat scrolling list where the best work
+was the hardest to find. The Report Card lived in a tab inside Manager Lab, four
+clicks from anywhere. Nothing about the analysis changed in this release; what
+changed is whether anyone can find it.
+
+### Added
+- **Five top-level sections**, grouped by when you would open the app rather
+  than by what kind of data they hold: **Now** (overview, power rankings,
+  playoff odds, standings), **Team** (assistant, franchises), **Trades**
+  (archive, trade lab), **History** (champions, head to head, records, season
+  explorer) and **Lab** (efficiency, waivers, drafts, report card, players).
+- **Sub-navigation** per section, which fits a phone without scrolling and
+  makes every destination one tap from its group.
+- **Deep links.** Every destination has a shareable hash — `#lab/lab:report`
+  opens the report card directly. Back and forward work, and a link pasted into
+  the league chat lands where it should.
+- `routing.js`, pure, with 14 tests including a round-trip assertion that every
+  destination survives being turned into a hash and parsed back. Suite is now
+  159 across eight modules.
+
+### Changed
+- Manager Lab's internal tab bar is gone. Its four panels are real destinations
+  in the Lab section instead of a second row of tabs inside one view.
+- Navigation renders from the `NAV` structure rather than hand-written markup,
+  so adding a view is a one-line change in one file.
+- Selecting a Lab panel updates the URL without adding a history entry, so the
+  back button leaves the section rather than stepping through tabs.
+- The shell paints from the URL immediately on load, so a deep link shows the
+  right view while its data is still arriving rather than after.
+
+### Notes
+- Old bare links like `#trades` still resolve, and an unrecognised hash falls
+  back to the overview rather than leaving a blank screen. Both are tested.
+
+## v9.2.0 — League Pulse
+
+### Added
+- **Power rankings** built on all-play record rather than standings, so schedule
+  luck does not decide who looks strong. Weighted: all-play 40%, recent
+  three-week form 25%, roster market value 25%, lineup efficiency 10%. Every
+  component is shown alongside the score so the ranking can be argued with.
+- **Week-over-week movement**, computed by re-running the same ranking with one
+  fewer week rather than storing snapshots. Nothing to persist and no way for
+  history to drift out of sync with the algorithm.
+- **Manager engagement**, grouped as "worth a nudge", "quiet but fine" and
+  "fully engaged", with the specific evidence listed under each name.
+- `pulse.js`, pure, with 16 tests. Suite is now 145 across seven modules.
+
+### Notes on the engagement feature
+This one describes what the data shows, not what a manager intends, and it is
+built to avoid accusing people wrongly:
+
+- An **unfilled lineup slot** is unambiguous and flags on its own.
+- **Making no moves is not evidence of anything.** A strong roster that never
+  gets touched belongs to someone who is set, not someone who is gone. A quiet
+  manager with good lineups is shown under "quiet but fine" and never flagged.
+- Softer signals — zero-scoring starters, low recent efficiency, a long gap
+  since the last transaction — must **accumulate** before anyone is surfaced.
+- The reasons are always displayed with the conclusion, so a manager can point
+  at the specific week and explain it.
+
+### Changed
+- The efficiency archive now records empty lineup slots and zero-scoring
+  starters per team-week, which is what the engagement signals read.
+- Power score renormalises around missing components, so a league with no market
+  value data still ranks sensibly instead of everyone scoring zero on roster
+  strength.
+
+## v9.1.0 — opportunity data
+
+### Added
+- **nflverse weekly usage**, free and open, routed through the worker for
+  caching and column filtering: snap share, target share, air yards share and
+  WOPR. Player dossiers now show recent form against everything earlier, so a
+  role change is visible instead of buried in a season average.
+- **Role growing / role shrinking** in the Assistant. Usage leads production
+  rather than following it, so a snap share climbing from 40% to 80% is a signal
+  the market has not priced yet.
+- **Sleeper trending adds and drops**, cross-referenced against this league.
+  "Added in 40,000 leagues today" is only actionable if he is free here, and
+  players already rostered are shown separately with their owner named, because
+  knowing a leaguemate holds a riser matters too.
+- `usage.js`, pure, with 13 tests covering CSV parsing, the NA marker, snap
+  merging, trend windows and signal thresholds. Suite is now 129 across six
+  modules.
+
+### Changed
+- `gsis_id` restored to the slimmed player card. It is the exact join key
+  nflverse uses, and one field buys exact id matching instead of name matching.
+- The worker serves nflverse datasets without requiring an API key, since it is
+  open data, and caches them for twelve hours so a whole league costs one
+  upstream fetch.
+
+### Notes
+- nflverse marks missing values `NA`. Read naively that becomes zero, which
+  would report a player with unknown target share as having none. Parsed as null
+  and excluded from averages instead.
+- Snap counts are a separate nflverse release. If it has not published yet, the
+  app degrades to target share alone rather than failing.
+- Rising-usage thresholds require both a real change and a real current role: a
+  jump from 5% to 15% of snaps is noise, 45% to 75% is a story.
+
 ## v9.0.0 — the full archive
 
 ### Added
