@@ -5,6 +5,8 @@
 //
 // Pure: no DOM, no network.
 
+import { detectScoringFormat, describeScoring } from './scoring.js';
+
 const ID_PATTERN = /^\d{6,25}$/;
 
 /**
@@ -111,11 +113,20 @@ export function summarizeLeagueForUser({
     }
   }
 
+  const pointsOrder = [...standings].sort((a, b) => b.pointsFor - a.pointsFor);
+  const pointsForRank = mine ? pointsOrder.findIndex(s => s.rosterId === Number(mine.roster_id)) + 1 : null;
+  const me = mine ? userById.get(mine.owner_id) : null;
+
   return {
     leagueId: league.league_id,
     name: league.name || 'Untitled league',
     season: league.season,
     avatar: league.avatar || null,
+    teamName: me?.metadata?.team_name || me?.display_name || null,
+    teamAvatar: me?.metadata?.avatar || (me?.avatar ? avatarUrl(me.avatar) : null),
+    badges: leagueFormatBadges(league),
+    playoffTeams: Number(league.settings?.playoff_teams) || null,
+    pointsForRank,
     teams: rosters.length || Number(league.total_rosters) || 0,
     status: league.status || null,
     inLeague: Boolean(mine),
@@ -159,4 +170,91 @@ export function aggregateLeagueSummaries(rows = []) {
     attention: rows.filter(r => r?.needsAttention).length,
     firstPlace: mine.filter(r => r.rank === 1).length
   };
+}
+
+// --- hero card metadata ----------------------------------------------------
+
+/** Sleeper's avatar CDN. Thumbnails are enough for a card. */
+export function avatarUrl(avatar, { thumb = true } = {}) {
+  if (!avatar) return null;
+  return `https://sleepercdn.com/avatars/${thumb ? 'thumbs/' : ''}${avatar}`;
+}
+
+/**
+ * The short format badges that tell you what kind of league this is at a
+ * glance: size, superflex, scoring, and whether it keeps players year to year.
+ */
+export function leagueFormatBadges(league) {
+  if (!league) return [];
+  const badges = [];
+  const teams = Number(league.total_rosters) || 0;
+  if (teams) badges.push(`${teams} team`);
+
+  const slots = league.roster_positions || [];
+  const superflex = slots.includes('SUPER_FLEX') || slots.filter(s => s === 'QB').length > 1;
+  if (superflex) badges.push('Superflex');
+
+  const scoring = describeScoring(detectScoringFormat(league.scoring_settings || {}));
+  if (scoring) badges.push(scoring);
+
+  const type = Number(league.settings?.type);
+  if (type === 2) badges.push('Dynasty');
+  else if (type === 1) badges.push('Keeper');
+
+  if (slots.some(s => ['DL', 'LB', 'DB', 'IDP_FLEX'].includes(s))) badges.push('IDP');
+  return badges;
+}
+
+/**
+ * Where this team sits relative to the playoff cut.
+ *
+ * "6th of 12" means nothing on its own; "last playoff spot" and "one out" are
+ * the readings that actually matter in October.
+ */
+export function playoffPicture(rank, playoffTeams, totalTeams) {
+  const spot = Number(rank);
+  const cut = Number(playoffTeams);
+  if (!Number.isFinite(spot) || !Number.isFinite(cut) || cut <= 0) return null;
+  if (spot <= 0) return null;
+
+  if (spot === 1) return { in: true, tone: 'good', label: 'Top seed' };
+  if (spot <= cut) {
+    const cushion = cut - spot;
+    if (cushion === 0) return { in: true, tone: 'warn', label: 'Last playoff spot' };
+    return { in: true, tone: 'good', label: `Playoff spot ${spot} of ${cut}` };
+  }
+  const outBy = spot - cut;
+  if (outBy === 1) return { in: false, tone: 'warn', label: 'First team out' };
+  const total = Number(totalTeams) || 0;
+  if (total && spot === total) return { in: false, tone: 'bad', label: 'Bottom of the league' };
+  return { in: false, tone: 'bad', label: `${outBy} spots out` };
+}
+
+/** How this week is actually going. */
+export function matchupState({ myScore, opponentScore, opponent } = {}) {
+  if (!opponent || myScore == null || opponentScore == null) return null;
+  if (myScore === 0 && opponentScore === 0) return { tone: 'idle', label: 'Not started' };
+  const margin = myScore - opponentScore;
+  if (Math.abs(margin) < 0.05) return { tone: 'warn', label: 'Dead even' };
+  return {
+    tone: margin > 0 ? 'good' : 'bad',
+    label: `${margin > 0 ? 'Up' : 'Down'} ${Math.abs(margin).toFixed(1)}`,
+    margin
+  };
+}
+
+/**
+ * Whether the record matches the scoring.
+ *
+ * A team scoring well with a bad record has been unlucky, and saying so on the
+ * card is more useful than another number.
+ */
+export function luckRead(rank, pointsForRank) {
+  const standing = Number(rank);
+  const scoring = Number(pointsForRank);
+  if (!Number.isFinite(standing) || !Number.isFinite(scoring)) return null;
+  const gap = standing - scoring;
+  if (gap >= 3) return { tone: 'bad', label: `Unlucky: ${scoring} in scoring, ${standing} in the table` };
+  if (gap <= -3) return { tone: 'warn', label: `Fortunate: ${standing} in the table, ${scoring} in scoring` };
+  return null;
 }

@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800;900&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=10.3.1" />
+  <link rel="stylesheet" href="styles.css?v=10.5.0" />
 </head>
 <body>
   <div class="app-shell">
@@ -33,8 +33,9 @@
         <div class="hero-art" aria-hidden="true">♛</div>
         <div class="live-card">
           <div class="live-top"><span class="status-dot tiny"></span><strong>LIVE SLEEPER DATA</strong></div>
-          <small>League 1326583431680761856</small>
-          <small id="live-updated" class="live-updated">Matchups update on load</small><button id="league-switch" type="button">Choose league</button><button id="refresh-btn" type="button">Refresh archive ↻</button>
+          <label class="live-league"><span>LEAGUE</span><select id="league-select" aria-label="Switch league"></select></label>
+          <small id="live-updated" class="live-updated">Matchups update on load</small>
+          <div class="live-actions"><button id="league-manage" type="button">Manage leagues</button><button id="refresh-btn" type="button">Refresh archive ↻</button></div>
         </div>
       </header>
 
@@ -267,8 +268,10 @@
         <div id="leagues-content" class="hidden">
           <article class="panel">
             <div class="panel-head"><div><p class="eyebrow">DASHBOARD</p><h2>Standing Everywhere</h2></div></div>
+            <p class="assistant-note">Removing a league only clears it from this device. Nothing on Sleeper changes and nobody else is affected.</p>
             <div id="leagues-summary"></div>
             <div id="leagues-list" class="leagues-grid"></div>
+            <div class="league-form"><button type="button" class="text-button muted hidden" id="leagues-forget-all">Forget all leagues</button></div>
           </article>
           <article class="panel">
             <div class="panel-head"><div><p class="eyebrow">ADD A LEAGUE</p><h2>Load Another</h2></div></div>
@@ -279,9 +282,14 @@
             </div>
             <div class="league-form">
               <input type="text" id="league-username" class="player-search" placeholder="Sleeper username" aria-label="Sleeper username" />
-              <button type="button" class="text-button" id="league-import">Import my leagues →</button>
+              <button type="button" class="text-button" id="league-import">Find my leagues →</button>
             </div>
             <p class="assistant-note" id="leagues-message"></p>
+            <div id="league-picker" class="league-picker hidden">
+              <div class="league-picker-head"><p class="eyebrow">CHOOSE WHICH TO ADD</p><button type="button" class="text-button muted" id="league-picker-all">Select all</button></div>
+              <div id="league-picker-list"></div>
+              <div class="league-form"><button type="button" class="text-button" id="league-picker-add">Add selected →</button><button type="button" class="text-button muted" id="league-picker-cancel">Cancel</button></div>
+            </div>
           </article>
         </div>
       </section>
@@ -341,9 +349,9 @@
         <div id="season-explorer-content" class="explorer-grid"><div class="loading-line"></div></div>
       </section>
 
-      <footer><span>DYNASTY OF LEGENDS</span><i>◆</i><span>POWERED BY SLEEPER DATA · BUILD v10.3.1 · FULL LINEUPS</span></footer>
+      <footer><span>DYNASTY OF LEGENDS</span><i>◆</i><span>POWERED BY SLEEPER DATA · BUILD v10.5.0 · LEAGUE HERO CARDS</span></footer>
     </main>
   </div>
-  <script type="module" src="app.js?v=10.3.1"></script>
+  <script type="module" src="app.js?v=10.5.0"></script>
 </body>
 </html>

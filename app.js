@@ -5,7 +5,6 @@ import {
   rankAmong,
   buildPlayerIndex,
   realizedForSide,
-  attributionShare,
   traceAssetForward,
   percentileRank,
   valueWeightedAge,
@@ -19,7 +18,7 @@ import {
   surplusValue,
   rosterCrunchCost,
   realizedSettledShare
-} from './analytics.js?v=10.3.1';
+} from './analytics.js?v=10.5.0';
 import {
   optimalLineup,
   weekEfficiency,
@@ -28,14 +27,18 @@ import {
   luckIndex,
   scheduleSwap,
   coachingRecord
-} from './efficiency.js?v=10.3.1';
+} from './efficiency.js?v=10.5.0';
 import {
   detectScoringFormat,
   describeScoring,
   nflversePoints,
   formatMatchesSource
-} from './scoring.js?v=10.3.1';
+} from './scoring.js?v=10.5.0';
 import {
+  avatarUrl as leagueAvatarUrl,
+  playoffPicture,
+  matchupState,
+  luckRead,
   parseLeagueInput,
   isValidLeagueId,
   normalizeUsername,
@@ -44,7 +47,7 @@ import {
   summarizeLeagueForUser,
   sortLeagueSummaries,
   aggregateLeagueSummaries
-} from './league.js?v=10.3.1';
+} from './league.js?v=10.5.0';
 import {
   NAV,
   DEFAULT_ROUTE,
@@ -53,13 +56,13 @@ import {
   resolveRoute,
   routeHash,
   itemsForGroup
-} from './routing.js?v=10.3.1';
+} from './routing.js?v=10.5.0';
 import {
   powerRankings,
   managerActivity,
   countEmptySlots,
   countZeroStarters
-} from './pulse.js?v=10.3.1';
+} from './pulse.js?v=10.5.0';
 import {
   aggregateUsage,
   mergeSnapCounts,
@@ -67,13 +70,13 @@ import {
   risingUsage,
   fadingUsage,
   crossReferenceTrending
-} from './usage.js?v=10.3.1';
+} from './usage.js?v=10.5.0';
 import {
   makeRng,
   scoringProfile,
   leagueScoringProfile,
   simulatePlayoffOdds
-} from './simulation.js?v=10.3.1';
+} from './simulation.js?v=10.5.0';
 import {
   waiverLeaderboard,
   waiverExtremes,
@@ -82,7 +85,7 @@ import {
   draftLeaderboard,
   reportCard,
   summarizeStints
-} from './insights.js?v=10.3.1';
+} from './insights.js?v=10.5.0';
 import {
   buildNameIndex,
   matchRankings,
@@ -92,7 +95,7 @@ import {
   arbitrageThresholds,
   matchProjections,
   startSitAdvice
-} from './fantasypros.js?v=10.3.1';
+} from './fantasypros.js?v=10.5.0';
 
 // Optional local overrides. `config.local.js` is gitignored and excluded from
 // release archives, so settings survive upgrades and never reach the repo.
@@ -110,7 +113,7 @@ const CONFIG = {
   maxHistorySeasons: 20,
   maxWeeksPerSeason: 18,
   matchupConcurrency: 4,
-  version: '10.3.1-lineups',
+  version: '10.5.0',
   valueApiBase: 'https://api.statsguyfantasy.com/api/v1',
   // Deployed proxy that holds the FantasyPros key. Empty disables ECR features.
   // See worker/fantasypros-proxy.js for the Cloudflare Worker, or api/ for Vercel.
@@ -186,6 +189,7 @@ const state = {
   leagueSummariesPromise: null,
   sleeperUser: null,
   leaguesMessage: null,
+  discoveredLeagues: [],
   chainMode: false,
   lineageReady: false,
   lineagePromise: null,
@@ -256,6 +260,18 @@ async function api(path) {
   apiInflight.set(path,promise); return promise;
 }
 
+/** Drop every cached entry belonging to one league. */
+function cacheDropLeague(leagueId){
+  if(!leagueId)return 0;
+  const prefix=`dol:tx:${leagueId}:`;
+  let removed=0;
+  try{
+    for(const key of Object.keys(localStorage)){
+      if(key.startsWith(prefix)){localStorage.removeItem(key);removed++;}
+    }
+  }catch{}
+  return removed;
+}
 function cacheGet(key,maxAgeMs){
   try{const raw=localStorage.getItem(key);if(!raw)return null;const obj=JSON.parse(raw);if(!obj?.savedAt||Date.now()-obj.savedAt>maxAgeMs)return null;return obj.data;}catch{return null;}
 }
@@ -2568,10 +2584,21 @@ async function switchLeague(leagueId){
   await goTo({group:'now',view:'overview'});
   return true;
 }
+/**
+ * The header switcher. A select rather than a link to the leagues page, so
+ * changing league takes one interaction from wherever you happen to be.
+ */
 function renderLeagueSwitcher(){
-  const node=$('league-switch');
-  if(!node)return;
-  node.textContent=state.league?.name||'Choose league';
+  const select=$('league-select');
+  if(!select)return;
+  const known=new Map();
+  if(state.league)known.set(state.league.league_id,{leagueId:state.league.league_id,name:state.league.name,season:state.league.season});
+  for(const entry of state.recentLeagues||[])if(!known.has(entry.leagueId))known.set(entry.leagueId,entry);
+  const options=[...known.values()];
+  select.innerHTML=options.length
+    ?options.map(l=>`<option value="${escapeHtml(l.leagueId)}">${escapeHtml(l.name||l.leagueId)}${l.season?` (${escapeHtml(String(l.season))})`:''}</option>`).join('')
+    :'<option value="">No league loaded</option>';
+  if(state.leagueId&&known.has(state.leagueId))select.value=state.leagueId;
 }
 
 // ---------------------------------------------------------------------------
@@ -2605,17 +2632,96 @@ async function buildLeagueSummaries(){
   const rows=await Promise.all(ids.map(id=>summarizeLeague(id,userId).catch(()=>null)));
   return sortLeagueSummaries(rows.filter(Boolean));
 }
+/**
+ * Remove a league from this device.
+ *
+ * Nothing on Sleeper is touched and nobody else is affected: this only forgets
+ * the name, id and season stored locally, plus that league's cached
+ * transactions. If it is the league currently open, hand over to the next one
+ * in the list first, or to the configured default when it was the last.
+ */
+async function forgetLeague(leagueId){
+  const entry=(state.recentLeagues||[]).find(l=>l.leagueId===leagueId);
+  const label=entry?.name||state.leagueSummaries?.find(r=>r.leagueId===leagueId)?.name||leagueId;
+  if(!confirm(`Remove ${label} from this device?\n\nThis only clears it from your list here. Nothing on Sleeper changes.`))return;
+
+  const remaining=removeRecentLeague(state.recentLeagues,leagueId);
+  state.recentLeagues=remaining;
+  cacheSet(CONFIG.recentLeaguesKey,remaining);
+  cacheDropLeague(leagueId);
+  state.leagueSummaries=(state.leagueSummaries||[]).filter(r=>r.leagueId!==leagueId);
+
+  // Do not let a reload resurrect a league that was just removed.
+  const lastOpened=cacheGet(CONFIG.lastLeagueKey,365*24*60*60*1000);
+  if(String(lastOpened)===String(leagueId))cacheSet(CONFIG.lastLeagueKey,remaining[0]?.leagueId||CONFIG.primaryLeagueId);
+
+  if(String(state.leagueId)===String(leagueId)){
+    const next=remaining[0]?.leagueId||CONFIG.primaryLeagueId;
+    state.leaguesMessage=`Removed ${label}. Now showing ${remaining[0]?.name||'the default league'}.`;
+    await switchLeague(next);
+    return;
+  }
+  state.leaguesMessage=`Removed ${label}.`;
+  renderLeagueSwitcher();
+  renderLeagues();
+}
+async function forgetAllLeagues(){
+  if(!confirm('Remove every saved league from this device?\n\nThis only clears your list here. Nothing on Sleeper changes.'))return;
+  for(const entry of state.recentLeagues||[])cacheDropLeague(entry.leagueId);
+  state.recentLeagues=[];
+  cacheSet(CONFIG.recentLeaguesKey,[]);
+  cacheSet(CONFIG.lastLeagueKey,CONFIG.primaryLeagueId);
+  state.leagueSummaries=null;
+  state.leaguesMessage='Cleared every saved league.';
+  await switchLeague(CONFIG.primaryLeagueId);
+}
+// Deep links from a card into that league. Each switches league first, so a
+// card is a real entry point rather than just a selector.
+const LEAGUE_DESTINATIONS=[
+  {label:'Home',group:'now',view:'overview'},
+  {label:'Power',group:'now',view:'pulse'},
+  {label:'Assistant',group:'team',view:'assistant'},
+  {label:'Trades',group:'trades',view:'trades'}
+];
 function leagueCardHtml(row){
-  const record=row.inLeague?`${row.wins}-${row.losses}${row.ties?`-${row.ties}`:''}`:'Not in this league';
-  const live=row.opponent?`<small>${row.myScore.toFixed(1)} vs ${escapeHtml(row.opponent)} ${row.opponentScore.toFixed(1)}</small>`:'<small>No matchup this week</small>';
   const current=row.leagueId===state.leagueId;
-  return `<article class="league-card${row.needsAttention?' league-attention':''}${current?' league-current':''}">
-    <div class="league-card-head"><div><strong>${escapeHtml(row.name)}</strong><small>${escapeHtml(String(row.season))} • ${row.teams} teams${current?' • open now':''}</small></div>${row.rank?`<b>#${row.rank}</b>`:''}</div>
-    <div class="league-card-body"><span>${escapeHtml(record)}</span>${live}</div>
+  const crest=leagueAvatarUrl(row.avatar);
+  const record=row.inLeague?`${row.wins}-${row.losses}${row.ties?`-${row.ties}`:''}`:'Spectating';
+  const playoffs=row.inLeague?playoffPicture(row.rank,row.playoffTeams,row.teams):null;
+  const live=matchupState(row);
+  const luck=row.inLeague?luckRead(row.rank,row.pointsForRank):null;
+  const badges=(row.badges||[]).slice(0,4);
+
+  const chip=(read)=>read?`<span class="league-chip chip-${read.tone}">${escapeHtml(read.label)}</span>`:'';
+  const links=LEAGUE_DESTINATIONS.map(d=>`<button type="button" class="league-link" data-goto-league="${escapeHtml(row.leagueId)}" data-goto-group="${d.group}" data-goto-view="${d.view}">${d.label}</button>`).join('');
+
+  return `<article class="league-hero${row.needsAttention?' league-attention':''}${current?' league-current':''}">
+    <div class="league-hero-top">
+      <div class="league-crest">${crest?`<img src="${escapeHtml(crest)}" alt="" loading="lazy" />`:`<span>${escapeHtml((row.name||'?').slice(0,1))}</span>`}</div>
+      <div class="league-hero-title">
+        <strong>${escapeHtml(row.name)}</strong>
+        <small>${escapeHtml(String(row.season))}${row.teamName?` • ${escapeHtml(row.teamName)}`:''}${current?' • open now':''}</small>
+      </div>
+      ${row.inLeague&&row.rank?`<div class="league-rank"><b>${row.rank}</b><span>of ${row.teams}</span></div>`:''}
+    </div>
+
+    ${badges.length?`<div class="league-badges">${badges.map(b=>`<span>${escapeHtml(b)}</span>`).join('')}</div>`:''}
+
+    <div class="league-stats">
+      <div><span>Record</span><strong>${escapeHtml(record)}</strong></div>
+      <div><span>Points for</span><strong>${row.pointsFor!=null?Math.round(row.pointsFor).toLocaleString():'—'}</strong></div>
+      <div><span>Scoring rank</span><strong>${row.pointsForRank?`#${row.pointsForRank}`:'—'}</strong></div>
+    </div>
+
+    <div class="league-chips">${chip(playoffs)}${chip(live)}${chip(luck)}</div>
+
+    ${row.opponent?`<p class="league-matchup">vs ${escapeHtml(row.opponent)} • ${row.myScore.toFixed(1)} – ${row.opponentScore.toFixed(1)}</p>`:''}
     ${row.needsAttention?`<p class="league-alert">${row.emptySlots} empty lineup slot${row.emptySlots===1?'':'s'} this week</p>`:''}
+
+    <div class="league-links">${links}</div>
     <div class="league-card-actions">
-      <button type="button" class="text-button" data-open-league="${escapeHtml(row.leagueId)}">${current?'Reload':'Open'} →</button>
-      ${current?'':`<button type="button" class="text-button muted" data-forget-league="${escapeHtml(row.leagueId)}">Forget</button>`}
+      <button type="button" class="text-button" data-open-league="${escapeHtml(row.leagueId)}">${current?'Reload':'Open league'} →</button>
+      <button type="button" class="text-button muted" data-forget-league="${escapeHtml(row.leagueId)}">Forget</button>
     </div>
   </article>`;
 }
@@ -2631,16 +2737,21 @@ function renderLeagues(){
   </div>`:'';
   $('leagues-list').innerHTML=rows.length?rows.map(leagueCardHtml).join('')
     :'<div class="empty-cell">No leagues loaded yet. Add one below.</div>';
+  $$('[data-goto-league]').forEach(b=>b.addEventListener('click',async()=>{
+    try{
+      if(b.dataset.gotoLeague!==state.leagueId)await switchLeague(b.dataset.gotoLeague);
+      await goTo({group:b.dataset.gotoGroup,view:b.dataset.gotoView});
+    }catch(e){showError(`Could not open that view: ${e.message}`);}
+  }));
   $$('[data-open-league]').forEach(b=>b.addEventListener('click',()=>{
     switchLeague(b.dataset.openLeague).catch(e=>showError(`Could not open that league: ${e.message}`));
   }));
   $$('[data-forget-league]').forEach(b=>b.addEventListener('click',()=>{
-    state.recentLeagues=removeRecentLeague(state.recentLeagues,b.dataset.forgetLeague);
-    cacheSet(CONFIG.recentLeaguesKey,state.recentLeagues);
-    state.leagueSummaries=(state.leagueSummaries||[]).filter(r=>r.leagueId!==b.dataset.forgetLeague);
-    renderLeagues();
+    forgetLeague(b.dataset.forgetLeague).catch(e=>showError(`Could not remove that league: ${e.message}`));
   }));
   $('leagues-message').innerHTML=state.leaguesMessage?escapeHtml(state.leaguesMessage):'';
+  $('leagues-forget-all').classList.toggle('hidden',!(state.recentLeagues||[]).length);
+  renderLeagueSwitcher();
 }
 async function loadLeagues({force=false}={}){
   $('leagues-loading').classList.remove('hidden');
@@ -2660,6 +2771,18 @@ async function addLeagueFromInput(){
   $('league-input').value='';
   await switchLeague(id);
 }
+/**
+ * Look up a Sleeper account and offer its leagues, rather than adding every
+ * one of them. Most people are in leagues they have no interest in seeing here.
+ */
+function renderLeaguePicker(){
+  const wrap=$('league-picker');
+  const found=state.discoveredLeagues||[];
+  if(!found.length){wrap.classList.add('hidden');$('league-picker-list').innerHTML='';return;}
+  const known=new Set((state.recentLeagues||[]).map(l=>l.leagueId));
+  $('league-picker-list').innerHTML=found.map(league=>`<label class="league-picker-row"><input type="checkbox" value="${escapeHtml(league.league_id)}"${known.has(league.league_id)?' checked':''} /><div><strong>${escapeHtml(league.name||league.league_id)}</strong><small>${escapeHtml(String(league.season||''))} • ${league.total_rosters||'?'} teams${known.has(league.league_id)?' • already added':''}</small></div></label>`).join('');
+  wrap.classList.remove('hidden');
+}
 async function importUserLeagues(){
   const username=$('league-username').value;
   if(!normalizeUsername(username)){state.leaguesMessage='Enter your Sleeper username.';renderLeagues();return;}
@@ -2667,17 +2790,28 @@ async function importUserLeagues(){
   $('leagues-loading').innerHTML='<span class="spinner"></span>Finding your leagues…';
   try{
     const leagues=await lookupUserLeagues(username);
-    if(!leagues.length){state.leaguesMessage='No leagues found for that username this season.';}
-    else{
-      for(const league of leagues)rememberLeague(league);
-      state.leaguesMessage=`Added ${leagues.length} league${leagues.length===1?'':'s'} for ${escapeHtml(state.sleeperUser?.display_name||username)}.`;
-    }
-    await loadLeagues({force:true});
+    state.discoveredLeagues=leagues;
+    state.leaguesMessage=leagues.length
+      ?`Found ${leagues.length} league${leagues.length===1?'':'s'} for ${state.sleeperUser?.display_name||username}. Choose which to add.`
+      :'No leagues found for that username this season.';
   }catch(e){
+    state.discoveredLeagues=[];
     state.leaguesMessage=`Could not look that up: ${e.message}`;
-    $('leagues-loading').classList.add('hidden');
-    renderLeagues();
   }
+  $('leagues-loading').classList.add('hidden');
+  renderLeagues();
+  renderLeaguePicker();
+}
+async function addPickedLeagues(){
+  const checked=[...$('league-picker-list').querySelectorAll('input:checked')].map(i=>i.value);
+  const chosen=(state.discoveredLeagues||[]).filter(l=>checked.includes(l.league_id));
+  if(!chosen.length){state.leaguesMessage='Select at least one league to add.';renderLeagues();return;}
+  for(const league of chosen)rememberLeague(league);
+  state.discoveredLeagues=[];
+  state.leaguesMessage=`Added ${chosen.length} league${chosen.length===1?'':'s'}.`;
+  renderLeaguePicker();
+  renderLeagueSwitcher();
+  await loadLeagues({force:true});
 }
 
 async function load(){clearError();setApiState('loading','Connecting to Sleeper');$('league-meta').textContent='Loading league...';try{state.league=await api(`/league/${state.leagueId}`);[state.users,state.rosters,state.nflState]=await Promise.all([api(`/league/${state.leagueId}/users`),api(`/league/${state.leagueId}/rosters`),api('/state/nfl').catch(()=>null)]);rememberLeague(state.league);renderLeagueSwitcher();renderCurrentLeague();await renderCurrentWeek();stampLiveUpdate();startLiveRefresh();setApiState('','Live Sleeper data');try{await loadHistory();setApiState('','Live + history ready');$('overview-legends').innerHTML='<div class="mini-award"><span>Historical Analytics</span><strong>Ready on demand</strong><small>Open H2H, Franchises or Records to load the deep archive.</small></div>';}catch(e){showError(`Current league loaded, but history could not finish: ${e.message}`);}}catch(e){showError(`Could not load Sleeper league ${state.leagueId}: ${e.message}`);}}
@@ -2694,7 +2828,16 @@ window.addEventListener('hashchange',()=>{
 $$('[data-jump]').forEach(b=>b.addEventListener('click',()=>goTo(resolveRoute(parseRoute(b.dataset.jump)))));$('season-select').addEventListener('change',e=>renderStandingsSeason(Number(e.target.value)));$('explorer-season').addEventListener('change',e=>renderSeasonExplorer(Number(e.target.value)));$('franchise-select').addEventListener('change',e=>renderFranchiseProfile(e.target.value));$('trade-season').addEventListener('change',loadSelectedTradeSeason);$('trade-chain-toggle').addEventListener('click',()=>{setChainMode(!state.chainMode).catch(e=>showError(`Chain grades failed: ${e.message}`));});$('trade-lab-a').addEventListener('change',()=>{state.tradeLabSelections.a.clear();refreshTradeLabSides();});$('trade-lab-b').addEventListener('change',()=>{state.tradeLabSelections.b.clear();refreshTradeLabSides();});$('assistant-manager').addEventListener('change',renderRosterAssistant);$('lab-season').addEventListener('change',e=>{state.labSeason=e.target.value;renderLab();if(state.labTab!=='efficiency')showLabTab(state.labTab);});
 $('player-search').addEventListener('input',e=>{state.playerQuery=e.target.value;renderPlayerSearch();});
 $('pulse-season').addEventListener('change',e=>{state.pulseSeason=e.target.value;renderPulse();});
-$('league-switch').addEventListener('click',()=>goTo({group:'now',view:'leagues'}));
+$('league-select').addEventListener('change',e=>{
+  if(e.target.value)switchLeague(e.target.value).catch(err=>showError(`Could not switch league: ${err.message}`));
+});
+$('league-manage').addEventListener('click',()=>goTo({group:'now',view:'leagues'}));
+$('league-picker-add').addEventListener('click',()=>{addPickedLeagues().catch(()=>{});});
+$('league-picker-cancel').addEventListener('click',()=>{state.discoveredLeagues=[];renderLeaguePicker();});
+$('leagues-forget-all').addEventListener('click',()=>{forgetAllLeagues().catch(()=>{});});
+$('league-picker-all').addEventListener('click',()=>{
+  $('league-picker-list').querySelectorAll('input').forEach(i=>{i.checked=true;});
+});
 $('league-add').addEventListener('click',()=>{addLeagueFromInput().catch(e=>showError(`Could not add league: ${e.message}`));});
 $('league-input').addEventListener('keydown',e=>{if(e.key==='Enter')addLeagueFromInput().catch(()=>{});});
 $('league-import').addEventListener('click',()=>{importUserLeagues().catch(()=>{});});

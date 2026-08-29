@@ -40,8 +40,15 @@ Then open `http://localhost:8000`.
 npm test
 ```
 
-Tests cover `analytics.js`, which holds the pure scoring and grading math with
-no DOM or network dependencies.
+Two layers. The pure modules (`analytics`, `efficiency`, `simulation`,
+`insights`, `usage`, `pulse`, `routing`, `league`, `scoring`, `fantasypros`) are
+unit tested with no DOM or network.
+
+`tests/integration.test.mjs` covers the seams between those modules and the
+page, which is where this app has actually broken: a renamed element id, a view
+with no section, an import that no longer exists, a stale cache buster, a
+hardcoded value. None of that shows up in a unit test and all of it breaks the
+page.
 
 ## Navigation
 

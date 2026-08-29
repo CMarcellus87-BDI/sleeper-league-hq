@@ -1,5 +1,93 @@
 # Changelog
 
+## v10.5.0 — league hero cards
+
+My Leagues was a list. It is now a set of hero cards, each a real entry point
+into that league rather than just a way to select it.
+
+### Added
+- **League crests.** `league.avatar` had been sitting unused since multi-league
+  shipped; leagues now carry their own artwork, with an initial as fallback.
+- **Format badges** on every card: size, superflex, scoring format, dynasty or
+  keeper, IDP. What kind of league this is, at a glance.
+- **Playoff position read.** "6th of 12" says nothing on its own. Cards now say
+  "Last playoff spot", "First team out" or "Top seed", which is the reading that
+  actually matters in October.
+- **Live matchup state** as up or down by a margin, rather than two raw scores.
+- **A luck read.** Scoring third but sitting ninth is worth saying out loud;
+  a small gap between the two is not, and stays quiet.
+- **Scoring rank next to record**, since the two disagreeing is the story.
+- **Deep links per card** to that league's Home, Power Rankings, Assistant and
+  Trades. Each switches league first, so a card is an entry point rather than a
+  selector.
+- Sixteen tests covering avatars, badges, playoff reads, matchup state and luck.
+  Suite is now 227.
+
+### Fixed
+- **Standard scoring displayed as "STD"**, an API code leaking into the
+  interface. It reads "Standard" now, in the card badges and the league header.
+- Two dead imports in `app.js`, both found by the regression suite rather than
+  by reading.
+
+### Changed
+- The regression suite understands `import { a as b }` aliasing, which it needed
+  once `league.js` grew an `avatarUrl` that collides with the one already in
+  `app.js`.
+
+## v10.4.1 — removing leagues
+
+### Fixed
+- **The league you were viewing could not be removed**, which is the one you are
+  most likely to want gone after opening it by mistake. Removing the open league
+  now hands over to the next one in your list, or to the configured default if
+  it was the last.
+- **The header selector kept showing removed leagues** until a reload, because
+  the list re-rendered without refreshing the dropdown.
+- **Forgetting a league left its cached transactions in localStorage** under
+  `dol:tx:{league_id}:*`. Those are now cleared with it.
+- **A removed league could come back on reload** if it was the one stored as
+  last opened. That pointer now moves to whatever remains.
+
+### Added
+- A confirmation naming the league before it is removed, and a "Forget all
+  leagues" control for clearing a batch import.
+- Wording in the view making clear that removal is local only: it clears the
+  name, id and season stored on this device and nothing on Sleeper changes.
+- Six tests covering removal, handover order and the dropdown refresh, including
+  regression checks that no control is suppressed for the active league and that
+  cached data is cleared. Suite is now 215.
+
+## v10.4.0 — league switching and a regression suite
+
+### Fixed
+- **The live card printed a hardcoded league id.** It had been sitting in the
+  markup since before multi-league and showed the same id no matter which league
+  was open.
+- **Header controls overlapped.** The league and refresh buttons were added
+  inline into a card whose buttons carry `padding:0` and no layout, so they
+  collided. They now sit in a spaced row under a proper league selector.
+- `attributionShare` was still imported by `app.js` after the chain walker moved
+  into `analytics.js` in v8.5. Harmless, but dead. Found by the new suite.
+
+### Changed
+- **Switching leagues now works from anywhere.** The header carries a league
+  selector rather than a link to the leagues page, so changing league is one
+  interaction from whatever view you are on.
+- **Username lookup offers a choice instead of importing everything.** Most
+  people are in leagues they have no interest in seeing here, so the leagues
+  found are presented as a checklist with a select-all, and nothing is added
+  until you confirm.
+
+### Added
+- **A whole-app regression suite** covering the seams the unit tests cannot see,
+  which is where this app has actually broken. It asserts that every element the
+  app looks up exists in the markup, every navigable view has a section, every
+  section is reachable, `navigate()` has a branch per view, every import
+  resolves to a real export and is used, cache-buster versions agree across the
+  markup, the module imports and `package.json`, no merge conflict markers
+  survive, no id is declared twice, and no Sleeper id is hardcoded. Suite is now
+  209 across twelve files.
+
 ## v10.3.1 — per-season lineup configuration
 
 ### Fixed

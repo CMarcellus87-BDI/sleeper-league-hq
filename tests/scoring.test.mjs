@@ -38,6 +38,10 @@ test('a plain format matches external sources cleanly', () => {
   assert.equal(formatMatchesSource(detectScoringFormat({ rec: 0.4 })), false);
 });
 
+test('the standard label reads as words, not an api code', () => {
+  assert.equal(describeScoring(detectScoringFormat({})), 'Standard');
+});
+
 test('the label says what was detected', () => {
   assert.equal(describeScoring(detectScoringFormat({ rec: 0.5 })), '0.5 PPR');
   assert.equal(describeScoring(detectScoringFormat({ rec: 1, bonus_rec_te: 0.5 })), 'PPR · TE premium +0.5');

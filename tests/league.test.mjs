@@ -8,7 +8,12 @@ import {
   removeRecentLeague,
   summarizeLeagueForUser,
   sortLeagueSummaries,
-  aggregateLeagueSummaries
+  aggregateLeagueSummaries,
+  avatarUrl,
+  leagueFormatBadges,
+  playoffPicture,
+  matchupState,
+  luckRead
 } from '../league.js';
 import { countEmptySlots } from '../pulse.js';
 
@@ -147,4 +152,113 @@ test('no leagues yields zeroes rather than dividing by nothing', () => {
   const totals = aggregateLeagueSummaries([]);
   assert.equal(totals.leagues, 0);
   assert.equal(totals.winPct, null);
+});
+
+test('removing a league leaves the rest in order', () => {
+  const list = [{ leagueId: 'a' }, { leagueId: 'b' }, { leagueId: 'c' }];
+  assert.deepEqual(removeRecentLeague(list, 'b').map(l => l.leagueId), ['a', 'c']);
+});
+
+test('removing the only league leaves an empty list, not a broken one', () => {
+  assert.deepEqual(removeRecentLeague([{ leagueId: 'a' }], 'a'), []);
+  assert.deepEqual(removeRecentLeague([], 'a'), []);
+  assert.deepEqual(removeRecentLeague(null, 'a'), []);
+});
+
+test('removing a league that was never in the list changes nothing', () => {
+  const list = [{ leagueId: 'a' }];
+  assert.deepEqual(removeRecentLeague(list, 'nope'), list);
+});
+
+test('the next league in the list is the natural handover target', () => {
+  // forgetLeague hands over to remaining[0] when the open league is removed.
+  const remaining = removeRecentLeague(
+    [{ leagueId: 'open' }, { leagueId: 'next', name: 'Next Up' }, { leagueId: 'other' }],
+    'open'
+  );
+  assert.equal(remaining[0].leagueId, 'next');
+  assert.equal(remaining[0].name, 'Next Up');
+});
+
+// --- hero card metadata ----------------------------------------------------
+
+test('avatar urls are built for Sleeper CDN', () => {
+  assert.equal(avatarUrl('abc123'), 'https://sleepercdn.com/avatars/thumbs/abc123');
+  assert.equal(avatarUrl('abc123', { thumb: false }), 'https://sleepercdn.com/avatars/abc123');
+  assert.equal(avatarUrl(null), null);
+});
+
+test('format badges describe the league at a glance', () => {
+  const badges = leagueFormatBadges({
+    total_rosters: 12,
+    roster_positions: ['QB', 'RB', 'WR', 'SUPER_FLEX', 'BN'],
+    scoring_settings: { rec: 1 },
+    settings: { type: 2 }
+  });
+  assert.deepEqual(badges, ['12 team', 'Superflex', 'PPR', 'Dynasty']);
+});
+
+test('a redraft standard league gets a minimal badge set', () => {
+  const badges = leagueFormatBadges({
+    total_rosters: 10,
+    roster_positions: ['QB', 'RB', 'WR'],
+    scoring_settings: {},
+    settings: { type: 0 }
+  });
+  assert.deepEqual(badges, ['10 team', 'Standard']);
+});
+
+test('IDP is flagged from the lineup', () => {
+  const badges = leagueFormatBadges({ total_rosters: 12, roster_positions: ['QB', 'LB', 'DB'], scoring_settings: { rec: 0.5 } });
+  assert.ok(badges.includes('IDP'));
+  assert.ok(badges.includes('0.5 PPR'));
+});
+
+test('a missing league produces no badges rather than throwing', () => {
+  assert.deepEqual(leagueFormatBadges(null), []);
+});
+
+test('the playoff read says what the rank actually means', () => {
+  assert.equal(playoffPicture(1, 6, 12).label, 'Top seed');
+  assert.equal(playoffPicture(6, 6, 12).label, 'Last playoff spot');
+  assert.equal(playoffPicture(3, 6, 12).in, true);
+  assert.equal(playoffPicture(7, 6, 12).label, 'First team out');
+  assert.equal(playoffPicture(9, 6, 12).label, '3 spots out', 'ninth with six spots is three out');
+  assert.equal(playoffPicture(12, 6, 12).label, 'Bottom of the league');
+});
+
+test('an unknown rank or playoff size yields no read', () => {
+  assert.equal(playoffPicture(null, 6, 12), null);
+  assert.equal(playoffPicture(3, null, 12), null);
+});
+
+test('the matchup state reads the scoreboard', () => {
+  assert.equal(matchupState({ myScore: 110, opponentScore: 90, opponent: 'Them' }).label, 'Up 20.0');
+  assert.equal(matchupState({ myScore: 80, opponentScore: 95, opponent: 'Them' }).tone, 'bad');
+  assert.equal(matchupState({ myScore: 0, opponentScore: 0, opponent: 'Them' }).label, 'Not started');
+  assert.equal(matchupState({ myScore: 100, opponentScore: 100, opponent: 'Them' }).label, 'Dead even');
+});
+
+test('a bye week has no matchup state', () => {
+  assert.equal(matchupState({ myScore: 90, opponentScore: null, opponent: null }), null);
+  assert.equal(matchupState({}), null);
+});
+
+test('scoring well with a bad record reads as unlucky', () => {
+  assert.equal(luckRead(9, 3).tone, 'bad');
+  assert.match(luckRead(9, 3).label, /Unlucky/);
+  assert.equal(luckRead(2, 8).tone, 'warn');
+  assert.equal(luckRead(4, 5), null, 'a small gap is not a story');
+});
+
+test('the summary carries what a hero card needs', () => {
+  const summary = summarizeLeagueForUser({
+    league: { ...league, settings: { playoff_teams: 6, type: 2 }, roster_positions: ['QB', 'RB', 'WR'], scoring_settings: { rec: 1 } },
+    rosters, users, userId: 'me', countEmptySlots,
+    matchups: [{ roster_id: 1, matchup_id: 1, points: 88.5, starters: ['1'] }]
+  });
+  assert.equal(summary.teamName, 'My Team');
+  assert.equal(summary.playoffTeams, 6);
+  assert.equal(summary.pointsForRank, 2, 'second in scoring');
+  assert.ok(summary.badges.includes('Dynasty'));
 });

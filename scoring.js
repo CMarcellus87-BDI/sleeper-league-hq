@@ -9,7 +9,7 @@
 // Pure module.
 
 export const FORMATS = {
-  STD: { key: 'STD', label: 'Standard', short: 'STD' },
+  STD: { key: 'STD', label: 'Standard', short: 'Standard' },
   HALF: { key: 'HALF', label: 'Half PPR', short: '0.5 PPR' },
   PPR: { key: 'PPR', label: 'Full PPR', short: 'PPR' }
 };
