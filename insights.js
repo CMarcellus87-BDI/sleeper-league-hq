@@ -3,6 +3,8 @@
 // All of these take rows the app has already assembled from the archive and
 // reduce them to rankings. Pure and testable.
 
+import { toNumberOrNull } from './analytics.js';
+
 /**
  * Waiver and FAAB returns.
  *
@@ -108,18 +110,6 @@ export function draftLeaderboard(gradedPicks = []) {
   return [...managers.values()]
     .map(acc => ({ ...acc, deltaPerPick: acc.picks ? acc.delta / acc.picks : 0 }))
     .sort((a, b) => b.deltaPerPick - a.deltaPerPick);
-}
-
-/**
- * Number(null) is 0 and Number('') is 0, both finite, so a plain isFinite guard
- * lets missing data through as a real zero. This has caused the same bug twice:
- * a manager with no waiver claims scoring worst, and a missing percentile
- * grading F. One helper, used everywhere a value might be absent.
- */
-function toNumberOrNull(value) {
-  if (value == null || value === '') return null;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
 }
 
 /**

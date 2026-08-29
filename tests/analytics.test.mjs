@@ -13,6 +13,7 @@ import {
   materiality,
   dampenedEdge,
   isMinorTrade,
+  mutualBenefit,
   isBefore,
   realizedForPlayerWindow,
   attributionShare,
@@ -485,4 +486,29 @@ test('damping preserves which side won', () => {
   const loser = dampenedEdge(-60, 4000, STARTABLE);
   assert.ok(winner > 0 && loser < 0);
   assert.equal(winner, -loser);
+});
+
+test('a trade both sides won scores above a lopsided one', () => {
+  // Market value cannot express this: it is zero-sum by construction.
+  const mutual = mutualBenefit(180, 165);
+  const blowout = mutualBenefit(400, 12);
+  assert.ok(mutual > blowout, 'both sides producing beats one side producing more');
+});
+
+test('a side that produced nothing means nobody won together', () => {
+  assert.equal(mutualBenefit(300, 0), 0);
+  assert.equal(mutualBenefit(0, 0), 0);
+});
+
+test('an even split beats a larger return that went one way', () => {
+  assert.ok(mutualBenefit(150, 150) > mutualBenefit(500, 60));
+});
+
+test('missing points yield no score rather than a zero', () => {
+  assert.equal(mutualBenefit(null, 100), null);
+  assert.equal(mutualBenefit(100, undefined), null);
+});
+
+test('more production on both sides scores higher', () => {
+  assert.ok(mutualBenefit(300, 280) > mutualBenefit(120, 110));
 });

@@ -1,5 +1,34 @@
 # Changelog
 
+## v10.7.1 — grades back, and a trade both sides won
+
+### Fixed
+- **Individual trade grades disappeared.** The unpriced-asset check added in
+  v10.6.0 counted every asset worth zero, which includes retired players,
+  players since dropped, and unresolved future picks. Those are normal parts of
+  a trade, not gaps in the data, so nearly every historical trade was suppressed
+  and only the awards remained. The check is now narrow: it fires only when the
+  value service priced an entire side at nothing despite that side receiving
+  assets. The small-deal case it was originally written for is handled properly
+  by the damping added in v10.7.0.
+
+### Added
+- **"Everybody Won" award.** Market value is zero-sum, so by that measure a
+  mutually good trade cannot exist: one side's surplus is always the other's
+  deficit. Realized points are not zero-sum, and both managers producing real
+  starting-lineup points from what they received is what a good trade actually
+  looks like. Scored on the weaker side and weighted by balance, so an even
+  split of a large return beats a bigger total that went almost entirely one
+  way, and a blowout scores near zero however much the winner gained.
+- `mutualBenefit` with 5 tests. Suite is now 254.
+
+### Changed
+- **One shared `toNumberOrNull`, exported from `analytics.js`.** `Number(null)`
+  is `0` and finite, which has now produced the same bug three separate times: a
+  manager with no waiver claims grading worst, a missing percentile grading F,
+  and a missing points total scoring as a genuine shutout. `insights.js` now
+  imports the canonical version rather than keeping its own copy.
+
 ## v10.6.1 — draft room repair and fairer engagement signals
 
 ### Fixed

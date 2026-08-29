@@ -2,6 +2,19 @@
 // No DOM, no network, no module-level state: everything here is testable in Node.
 
 /**
+ * Number(null) is 0 and Number('') is 0, both finite, so a plain isFinite check
+ * lets missing data through as a real zero. That has produced the same bug
+ * three separate times in this codebase: a manager with no waiver claims
+ * grading worst, a missing percentile grading F, and a missing points total
+ * scoring as a genuine shutout. Every module now shares this one guard.
+ */
+export function toNumberOrNull(value) {
+  if (value == null || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
  * Letter grade for a market-value edge percentage.
  * Bands are width-symmetric around B: A+/F, A/D, A-/C and B+/B- are mirror pairs.
  */
@@ -454,4 +467,29 @@ export function isMinorTrade(totalValue, reference, floor = 0.25) {
   const ref = Number(reference) || 0;
   if (ref <= 0) return false;
   return (Number(totalValue) || 0) < ref * floor;
+}
+
+/**
+ * How well a trade worked out for *both* sides.
+ *
+ * Market value is zero-sum, so one side's surplus is always the other's
+ * deficit and a mutually good trade cannot exist by that measure. Realized
+ * points are not zero-sum: both managers can get real production out of what
+ * they received, which is what a good trade actually looks like.
+ *
+ * Scored on the weaker side, so a deal only rates highly when neither manager
+ * was fleeced. A lopsided blowout scores near zero here no matter how much the
+ * winner gained.
+ */
+export function mutualBenefit(aPoints, bPoints) {
+  const a = toNumberOrNull(aPoints);
+  const b = toNumberOrNull(bPoints);
+  if (a == null || b == null) return null;
+  if (a <= 0 || b <= 0) return 0;
+  const weaker = Math.min(a, b);
+  const stronger = Math.max(a, b);
+  // Balance falls away as the sides diverge, so an even split of a large return
+  // beats a larger total that went almost entirely one way.
+  const balance = weaker / stronger;
+  return weaker * balance;
 }

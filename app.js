@@ -19,8 +19,9 @@ import {
   rosterCrunchCost,
   realizedSettledShare,
   dampenedEdge,
-  isMinorTrade
-} from './analytics.js?v=10.7.0';
+  isMinorTrade,
+  mutualBenefit
+} from './analytics.js?v=10.7.1';
 import {
   optimalLineup,
   weekEfficiency,
@@ -29,13 +30,13 @@ import {
   luckIndex,
   scheduleSwap,
   coachingRecord
-} from './efficiency.js?v=10.7.0';
+} from './efficiency.js?v=10.7.1';
 import {
   detectScoringFormat,
   describeScoring,
   nflversePoints,
   formatMatchesSource
-} from './scoring.js?v=10.7.0';
+} from './scoring.js?v=10.7.1';
 import {
   avatarUrl as leagueAvatarUrl,
   playoffPicture,
@@ -49,7 +50,7 @@ import {
   summarizeLeagueForUser,
   sortLeagueSummaries,
   aggregateLeagueSummaries
-} from './league.js?v=10.7.0';
+} from './league.js?v=10.7.1';
 import {
   NAV,
   DEFAULT_ROUTE,
@@ -58,13 +59,13 @@ import {
   resolveRoute,
   routeHash,
   itemsForGroup
-} from './routing.js?v=10.7.0';
+} from './routing.js?v=10.7.1';
 import {
   powerRankings,
   managerActivity,
   countEmptySlots,
   countZeroStarters
-} from './pulse.js?v=10.7.0';
+} from './pulse.js?v=10.7.1';
 import {
   aggregateUsage,
   mergeSnapCounts,
@@ -72,13 +73,13 @@ import {
   risingUsage,
   fadingUsage,
   crossReferenceTrending
-} from './usage.js?v=10.7.0';
+} from './usage.js?v=10.7.1';
 import {
   makeRng,
   scoringProfile,
   leagueScoringProfile,
   simulatePlayoffOdds
-} from './simulation.js?v=10.7.0';
+} from './simulation.js?v=10.7.1';
 import {
   waiverLeaderboard,
   waiverExtremes,
@@ -88,7 +89,7 @@ import {
   reportCard,
   reportGrade,
   summarizeStints
-} from './insights.js?v=10.7.0';
+} from './insights.js?v=10.7.1';
 import {
   buildNameIndex,
   matchRankings,
@@ -98,7 +99,7 @@ import {
   arbitrageThresholds,
   matchProjections,
   startSitAdvice
-} from './fantasypros.js?v=10.7.0';
+} from './fantasypros.js?v=10.7.1';
 
 // Optional local overrides. `config.local.js` is gitignored and excluded from
 // release archives, so settings survive upgrades and never reach the repo.
@@ -116,7 +117,7 @@ const CONFIG = {
   maxHistorySeasons: 20,
   maxWeeksPerSeason: 18,
   matchupConcurrency: 4,
-  version: '10.7.0',
+  version: '10.7.1',
   valueApiBase: 'https://api.statsguyfantasy.com/api/v1',
   // Deployed proxy that holds the FantasyPros key. Empty disables ECR features.
   // See worker/fantasypros-proxy.js for the Cloudflare Worker, or api/ for Vercel.
@@ -812,25 +813,11 @@ function tradeChrono(t){
   const week=Number(t.leg);
   return{season,week:Number.isFinite(week)&&week>0?week:null};
 }
-/**
- * How much of one side of a trade the value service could actually price.
- *
- * When a pick or player comes back at zero, the edge calculation treats that
- * side as having received nothing, which produces an F for a deal that was
- * merely unpriceable. Counting the gaps lets the grade say "unknown" instead.
- */
-function unpricedAssets(t,rid){
-  let unpriced=0,total=0;
-  Object.entries(t.adds||{}).filter(([,r])=>Number(r)===Number(rid)).forEach(([pid])=>{
-    total++;if(!(marketValueForPlayer(pid)>0))unpriced++;
-  });
-  (t.draft_picks||[]).filter(p=>Number(p.owner_id)===Number(rid)).forEach(p=>{
-    total++;
-    const resolved=resolvedPick(p);
-    const value=resolved?.playerId?marketValueForPlayer(resolved.playerId):marketValueForPick(p.season,p.round);
-    if(!(value>0))unpriced++;
-  });
-  return{unpriced,total};
+/** How many gradeable assets a side received. */
+function receivedAssetCount(t,rid){
+  const players=Object.entries(t.adds||{}).filter(([,r])=>Number(r)===Number(rid)).length;
+  const picks=(t.draft_picks||[]).filter(p=>Number(p.owner_id)===Number(rid)).length;
+  return players+picks;
 }
 function receivedForPoints(t,rid){
   const playerIds=[],assets=[];
@@ -1043,17 +1030,21 @@ function tradeGradeHtml(g,rid,realized,trade){
   const cells=[];
   if(g){
     const isA=Number(rid)===Number(g.aRoster);
-    // A side whose assets could not be priced has no meaningful market grade.
-    const gaps=trade?unpricedAssets(trade,rid):{unpriced:0,total:0};
-    const otherRid=(trade?.roster_ids||[]).find(r=>Number(r)!==Number(rid));
-    const otherGaps=trade&&otherRid!=null?unpricedAssets(trade,otherRid):{unpriced:0,total:0};
-    if(gaps.unpriced||otherGaps.unpriced){
-      const which=gaps.unpriced?'this side':'the other side';
-      return `<div class="grade-strip grade-strip-single"><div><span>MARKET GRADE</span><strong>—</strong><small>${gaps.unpriced+otherGaps.unpriced} asset${gaps.unpriced+otherGaps.unpriced===1?'':'s'} on ${which} could not be priced</small></div></div>${realizedCellHtml(realized,rid)?`<div class="grade-strip grade-strip-single">${realizedCellHtml(realized,rid)}</div>`:''}`;
-    }
     const reference=startableReference();
+    // Only suppress when the service priced an entire side at nothing despite
+    // it receiving assets. Individual zero-valued pieces are normal: retired
+    // players and unresolved future picks are worth nothing and that is a real
+    // fact about the deal, not a gap in the data.
+    const otherRid=(trade?.roster_ids||[]).find(r=>Number(r)!==Number(rid));
+    const sideUnpriced=(side)=>{
+      if(!side||!trade)return false;
+      const mineZero=(isA?side.a:side.b)<=0&&receivedAssetCount(trade,rid)>0;
+      const theirsZero=(isA?side.b:side.a)<=0&&otherRid!=null&&receivedAssetCount(trade,otherRid)>0;
+      return mineZero||theirsZero;
+    };
     const grade=(side)=>{
       if(!side)return null;
+      if(sideUnpriced(side))return{letter:'—',note:'One side could not be priced'};
       if(isMinorTrade(side.total,reference))return{letter:'—',note:'Too small to grade'};
       const raw=isA?side.aEdge:side.bEdge;
       return{letter:gradeLetter(dampenedEdge(raw,side.total,reference)),note:null};
@@ -1088,7 +1079,27 @@ function renderTradeAwards(txs,grades){
   const gamble=[...candidates].filter(x=>x.then!=null&&x.then<-3&&x.edge>8).sort((a,b)=>(b.edge-b.then)-(a.edge-a.then))[0];
   const process=[...candidates].filter(x=>x.then!=null&&x.then>3&&x.edge<-8).sort((a,b)=>(a.edge-a.then)-(b.edge-b.then))[0];
   const card=(label,x,icon)=>x?`<button type="button" class="trade-award-card" data-trade-jump="${escapeHtml(x.t.transaction_id)}"><span>${icon}</span><small>${label}</small><strong>${escapeHtml(x.name)}</strong><b>${gradeLetter(x.edge)}</b><p>${x.t.season} • ${tradeDateISO(x.t)||`Week ${x.t.leg||'?'}`} • open trade →</p></button>`:'';
-  $('trade-awards').innerHTML=card('Best Trade Outcome',best,'🏆')+card('Worst Trade Outcome',worst,'💀')+card('Best Gamble',gamble,'🎲')+card('Good Process, Bad Result',process,'🫠');$('trade-awards').classList.remove('hidden');
+
+  // Everyone wins sometimes. Market value cannot show it, because it is
+  // zero-sum; realized points can, because both managers can genuinely produce
+  // from what they received.
+  let winWin=null;
+  if(state.archive?.playerIndex){
+    const mutual=[];
+    for(const t of txs){
+      const realized=realizedTradeSummary(t);
+      if(!realized)continue;
+      const sides=[...realized.byRoster.values()];
+      if(sides.length!==2)continue;
+      const score=mutualBenefit(sides[0].started,sides[1].started);
+      if(!score)continue;
+      mutual.push({t,score,sides});
+    }
+    winWin=mutual.sort((a,b)=>b.score-a.score)[0]||null;
+  }
+  const mutualCard=winWin?`<button type="button" class="trade-award-card" data-trade-jump="${escapeHtml(winWin.t.transaction_id)}"><span>🤝</span><small>Everybody Won</small><strong>${winWin.sides.map(s=>escapeHtml(rosterTradeIdentity(winWin.t.item,s.rosterId))).join(' + ')}</strong><b>${Math.round(Math.min(...winWin.sides.map(s=>s.started)))}+</b><p>${winWin.sides.map(s=>`${Math.round(s.started)} pts`).join(' vs ')} • open trade →</p></button>`:'';
+
+  $('trade-awards').innerHTML=card('Best Trade Outcome',best,'🏆')+card('Worst Trade Outcome',worst,'💀')+mutualCard+card('Best Gamble',gamble,'🎲')+card('Good Process, Bad Result',process,'🫠');$('trade-awards').classList.remove('hidden');
 }
 function bindTradeAwardJumps(){
   $$('[data-trade-jump]').forEach(btn=>btn.addEventListener('click',()=>{const card=$(`trade-${btn.dataset.tradeJump}`);if(!card)return;card.scrollIntoView({behavior:'smooth',block:'center'});card.classList.add('trade-card-highlight');setTimeout(()=>card.classList.remove('trade-card-highlight'),1800);}));
