@@ -10,6 +10,9 @@ import {
   realizedForPlayer,
   realizedForSide,
   realizedSettledShare,
+  materiality,
+  dampenedEdge,
+  isMinorTrade,
   isBefore,
   realizedForPlayerWindow,
   attributionShare,
@@ -424,4 +427,62 @@ test('composed end to end, a 3-for-1 that looks even on market value is not', ()
   const crunch = rosterCrunchCost(after, 25);
   assert.equal(crunch.overBy, 1, 'sending one and receiving three puts the roster over');
   assert.ok(crunch.cost > 0, 'the forced drop has a real cost');
+});
+
+// --- deal size -------------------------------------------------------------
+
+const STARTABLE = 1200;
+
+test('a tiny lopsided deal is damped, a real one is not', () => {
+  // Both are a 200% edge on the raw ratio. Only one of them matters.
+  const noise = dampenedEdge(200, 20, STARTABLE);
+  const real = dampenedEdge(200, 9000, STARTABLE);
+  assert.ok(Math.abs(noise) < 5, `two worthless players should not grade out, got ${noise.toFixed(1)}`);
+  assert.equal(gradeLetter(noise), 'B');
+  assert.equal(real, 200, 'a genuine blockbuster keeps its full edge');
+  assert.equal(gradeLetter(real), 'A+');
+});
+
+test('materiality rises with deal size and tops out', () => {
+  assert.equal(materiality(0, STARTABLE), 0);
+  assert.equal(materiality(3600, STARTABLE), 1, 'three startable players is a full deal');
+  assert.equal(materiality(50000, STARTABLE), 1, 'it never exceeds one');
+  assert.ok(materiality(1800, STARTABLE) < 0.5, 'the curve is steeper than a straight ratio');
+  assert.ok(materiality(2700, STARTABLE) > materiality(1800, STARTABLE));
+});
+
+test('a bench-depth swap does not grade like a blockbuster', () => {
+  // 400 against 150 is a 91% edge on the raw ratio, which used to read A+.
+  const depth = dampenedEdge(91, 550, STARTABLE);
+  assert.ok(['B', 'B+'].includes(gradeLetter(depth)), `expected a modest grade, got ${gradeLetter(depth)}`);
+});
+
+test('a two-to-one swap of startable players still grades strongly', () => {
+  const real = dampenedEdge(66, 1800, STARTABLE);
+  assert.ok(['A', 'A-'].includes(gradeLetter(real)), `expected a strong grade, got ${gradeLetter(real)}`);
+});
+
+test('without a reference nothing is damped', () => {
+  assert.equal(materiality(20, 0), 1);
+  assert.equal(dampenedEdge(200, 20, null), 200, 'a league with no market data grades as before');
+});
+
+test('a deal below a quarter of a startable player is not worth grading', () => {
+  assert.equal(isMinorTrade(20, STARTABLE), true);
+  assert.equal(isMinorTrade(200, STARTABLE), true);
+  assert.equal(isMinorTrade(400, STARTABLE), false);
+  assert.equal(isMinorTrade(9000, STARTABLE), false);
+  assert.equal(isMinorTrade(20, 0), false, 'no reference means no judgement');
+});
+
+test('an unknown edge stays unknown after damping', () => {
+  assert.equal(dampenedEdge(null, 9000, STARTABLE), null);
+  assert.equal(gradeLetter(dampenedEdge(null, 9000, STARTABLE)), '—');
+});
+
+test('damping preserves which side won', () => {
+  const winner = dampenedEdge(60, 4000, STARTABLE);
+  const loser = dampenedEdge(-60, 4000, STARTABLE);
+  assert.ok(winner > 0 && loser < 0);
+  assert.equal(winner, -loser);
 });

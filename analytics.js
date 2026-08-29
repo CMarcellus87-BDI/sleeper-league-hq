@@ -417,3 +417,41 @@ export function rosterCrunchCost(players = [], limit) {
   const cuts = ordered.slice(0, overBy);
   return { overBy, cuts, cost: cuts.reduce((n, c) => n + (Number(c?.value) || 0), 0) };
 }
+
+// --- deal size -------------------------------------------------------------
+
+/**
+ * Percentage edge is a ratio, so it has no sense of scale: 20 against 0 and
+ * 6,000 against 3,000 both read as a fleecing, and the first one is two players
+ * nobody wanted. Materiality is how much the deal is actually worth, expressed
+ * against a reference value for one startable player, and it damps the edge so
+ * a rounding error cannot grade out as the trade of the year.
+ *
+ * Returns 1 when no reference is available, so a league without market data
+ * behaves exactly as before rather than having every grade suppressed.
+ */
+export function materiality(totalValue, reference) {
+  const total = Number(totalValue) || 0;
+  const ref = Number(reference) || 0;
+  if (ref <= 0) return 1;
+  // Full weight at roughly three startable players, and curved rather than
+  // linear: a straight ratio still let bench-depth swaps grade out near the top
+  // because a small deal that is lopsided is still very lopsided.
+  const share = Math.max(0, Math.min(1, total / (ref * 3)));
+  return share ** 1.5;
+}
+
+export function dampenedEdge(edge, totalValue, reference) {
+  if (edge == null || !Number.isFinite(Number(edge))) return null;
+  return Number(edge) * materiality(totalValue, reference);
+}
+
+/**
+ * Below a quarter of one startable player, a trade is not worth grading at all.
+ * Saying so is more honest than printing a letter derived from noise.
+ */
+export function isMinorTrade(totalValue, reference, floor = 0.25) {
+  const ref = Number(reference) || 0;
+  if (ref <= 0) return false;
+  return (Number(totalValue) || 0) < ref * floor;
+}

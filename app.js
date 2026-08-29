@@ -17,8 +17,10 @@ import {
   replacementLevels,
   surplusValue,
   rosterCrunchCost,
-  realizedSettledShare
-} from './analytics.js?v=10.6.1';
+  realizedSettledShare,
+  dampenedEdge,
+  isMinorTrade
+} from './analytics.js?v=10.7.0';
 import {
   optimalLineup,
   weekEfficiency,
@@ -27,13 +29,13 @@ import {
   luckIndex,
   scheduleSwap,
   coachingRecord
-} from './efficiency.js?v=10.6.1';
+} from './efficiency.js?v=10.7.0';
 import {
   detectScoringFormat,
   describeScoring,
   nflversePoints,
   formatMatchesSource
-} from './scoring.js?v=10.6.1';
+} from './scoring.js?v=10.7.0';
 import {
   avatarUrl as leagueAvatarUrl,
   playoffPicture,
@@ -47,7 +49,7 @@ import {
   summarizeLeagueForUser,
   sortLeagueSummaries,
   aggregateLeagueSummaries
-} from './league.js?v=10.6.1';
+} from './league.js?v=10.7.0';
 import {
   NAV,
   DEFAULT_ROUTE,
@@ -56,13 +58,13 @@ import {
   resolveRoute,
   routeHash,
   itemsForGroup
-} from './routing.js?v=10.6.1';
+} from './routing.js?v=10.7.0';
 import {
   powerRankings,
   managerActivity,
   countEmptySlots,
   countZeroStarters
-} from './pulse.js?v=10.6.1';
+} from './pulse.js?v=10.7.0';
 import {
   aggregateUsage,
   mergeSnapCounts,
@@ -70,13 +72,13 @@ import {
   risingUsage,
   fadingUsage,
   crossReferenceTrending
-} from './usage.js?v=10.6.1';
+} from './usage.js?v=10.7.0';
 import {
   makeRng,
   scoringProfile,
   leagueScoringProfile,
   simulatePlayoffOdds
-} from './simulation.js?v=10.6.1';
+} from './simulation.js?v=10.7.0';
 import {
   waiverLeaderboard,
   waiverExtremes,
@@ -86,7 +88,7 @@ import {
   reportCard,
   reportGrade,
   summarizeStints
-} from './insights.js?v=10.6.1';
+} from './insights.js?v=10.7.0';
 import {
   buildNameIndex,
   matchRankings,
@@ -96,7 +98,7 @@ import {
   arbitrageThresholds,
   matchProjections,
   startSitAdvice
-} from './fantasypros.js?v=10.6.1';
+} from './fantasypros.js?v=10.7.0';
 
 // Optional local overrides. `config.local.js` is gitignored and excluded from
 // release archives, so settings survive upgrades and never reach the repo.
@@ -114,7 +116,7 @@ const CONFIG = {
   maxHistorySeasons: 20,
   maxWeeksPerSeason: 18,
   matchupConcurrency: 4,
-  version: '10.6.1',
+  version: '10.7.0',
   valueApiBase: 'https://api.statsguyfantasy.com/api/v1',
   // Deployed proxy that holds the FantasyPros key. Empty disables ECR features.
   // See worker/fantasypros-proxy.js for the Cloudflare Worker, or api/ for Vercel.
@@ -774,7 +776,8 @@ function normalizeGrade(t, thenResult, nowResult){
     if(!r)return null;
     const a=toSide(r,'sideA'),b=toSide(r,'sideB');
     if(!a&&!b)return null;
-    return{a,b,aEdge:edgePct(a,b),bEdge:edgePct(b,a)};
+    const total=a+b;
+    return{a,b,total,aEdge:edgePct(a,b),bEdge:edgePct(b,a)};
   };
   const now=calc(nowResult),then=calc(thenResult);
   return{transactionId:t.transaction_id,aRoster:ids[0],bRoster:ids[1],aName,bName,date:tradeDateISO(t),then,now,thenRaw:thenResult,nowRaw:nowResult};
@@ -1048,8 +1051,16 @@ function tradeGradeHtml(g,rid,realized,trade){
       const which=gaps.unpriced?'this side':'the other side';
       return `<div class="grade-strip grade-strip-single"><div><span>MARKET GRADE</span><strong>—</strong><small>${gaps.unpriced+otherGaps.unpriced} asset${gaps.unpriced+otherGaps.unpriced===1?'':'s'} on ${which} could not be priced</small></div></div>${realizedCellHtml(realized,rid)?`<div class="grade-strip grade-strip-single">${realizedCellHtml(realized,rid)}</div>`:''}`;
     }
-    if(g.then)cells.push(`<div><span>THEN</span><strong>${gradeLetter(isA?g.then.aEdge:g.then.bEdge)}</strong><small>Market grade when dealt</small></div>`);
-    if(g.now)cells.push(`<div><span>NOW</span><strong>${gradeLetter(isA?g.now.aEdge:g.now.bEdge)}</strong><small>Value of the assets today</small></div>`);
+    const reference=startableReference();
+    const grade=(side)=>{
+      if(!side)return null;
+      if(isMinorTrade(side.total,reference))return{letter:'—',note:'Too small to grade'};
+      const raw=isA?side.aEdge:side.bEdge;
+      return{letter:gradeLetter(dampenedEdge(raw,side.total,reference)),note:null};
+    };
+    const then=grade(g.then),now=grade(g.now);
+    if(then)cells.push(`<div><span>THEN</span><strong>${then.letter}</strong><small>${then.note||'Market grade when dealt'}</small></div>`);
+    if(now)cells.push(`<div><span>NOW</span><strong>${now.letter}</strong><small>${now.note||'Value of the assets today'}</small></div>`);
   }
   const realizedCell=realizedCellHtml(realized,rid);
   if(realizedCell)cells.push(realizedCell);
@@ -1058,9 +1069,22 @@ function tradeGradeHtml(g,rid,realized,trade){
   return `<div class="grade-strip${sizeClass}">${cells.join('')}</div>`;
 }
 function renderTradeAwards(txs,grades){
-  const candidates=[];txs.forEach(t=>{const g=grades?.get(t.transaction_id);if(!g?.now)return;candidates.push({t,g,rid:g.aRoster,name:g.aName,edge:g.now.aEdge,then:g.then?.aEdge??null});candidates.push({t,g,rid:g.bRoster,name:g.bName,edge:g.now.bEdge,then:g.then?.bEdge??null});});
+  const reference=startableReference();
+  const candidates=[];
+  txs.forEach(t=>{
+    const g=grades?.get(t.transaction_id);
+    if(!g?.now)return;
+    // Skip deals too small to mean anything. A swap of two worthless players is
+    // a 200% edge on the raw ratio and used to win trade of the year.
+    if(isMinorTrade(g.now.total,reference))return;
+    const damp=(edge)=>dampenedEdge(edge,g.now.total,reference);
+    candidates.push({t,g,rid:g.aRoster,name:g.aName,edge:damp(g.now.aEdge),gain:g.now.a-g.now.b,then:g.then?dampenedEdge(g.then.aEdge,g.then.total,reference):null});
+    candidates.push({t,g,rid:g.bRoster,name:g.bName,edge:damp(g.now.bEdge),gain:g.now.b-g.now.a,then:g.then?dampenedEdge(g.then.bEdge,g.then.total,reference):null});
+  });
   if(!candidates.length){$('trade-awards').classList.add('hidden');return;}
-  const best=[...candidates].sort((a,b)=>b.edge-a.edge)[0],worst=[...candidates].sort((a,b)=>a.edge-b.edge)[0];
+  // Rank on value actually gained. A percentage says how lopsided a deal was;
+  // it does not say whether the deal was worth anything.
+  const best=[...candidates].sort((a,b)=>b.gain-a.gain)[0],worst=[...candidates].sort((a,b)=>a.gain-b.gain)[0];
   const gamble=[...candidates].filter(x=>x.then!=null&&x.then<-3&&x.edge>8).sort((a,b)=>(b.edge-b.then)-(a.edge-a.then))[0];
   const process=[...candidates].filter(x=>x.then!=null&&x.then>3&&x.edge<-8).sort((a,b)=>(a.edge-a.then)-(b.edge-b.then))[0];
   const card=(label,x,icon)=>x?`<button type="button" class="trade-award-card" data-trade-jump="${escapeHtml(x.t.transaction_id)}"><span>${icon}</span><small>${label}</small><strong>${escapeHtml(x.name)}</strong><b>${gradeLetter(x.edge)}</b><p>${x.t.season} • ${tradeDateISO(x.t)||`Week ${x.t.leg||'?'}`} • open trade →</p></button>`:'';
@@ -1254,6 +1278,24 @@ function leagueReplacementLevels(){
  * terms, which is why surplus is shown next to market balance rather than
  * replacing it.
  */
+/**
+ * What one startable player is worth in this league, used to judge whether a
+ * trade is big enough to grade. Average replacement level across the positions
+ * that carry value; falls back to the median rostered player.
+ */
+function startableReference(){
+  const levels=leagueReplacementLevels();
+  const values=['QB','RB','WR','TE'].map(pos=>Number(levels[pos])||0).filter(v=>v>0);
+  if(values.length)return values.reduce((n,v)=>n+v,0)/values.length;
+  const all=[];
+  for(const roster of state.rosters||[])for(const id of roster.players||[]){
+    const value=marketValueForPlayer(id);
+    if(value>0)all.push(value);
+  }
+  if(!all.length)return 0;
+  all.sort((a,b)=>a-b);
+  return all[Math.floor(all.length/2)];
+}
 function assetSurplus(asset){
   if(!asset)return 0;
   if(asset.type==='pick')return Number(asset.value||0);
