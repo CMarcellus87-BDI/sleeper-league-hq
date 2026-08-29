@@ -124,7 +124,13 @@ export function powerRankings(weekScores = [], options = {}) {
 export function managerActivity(teamWeeks = [], {
   lastTransactionWeek = new Map(),
   currentWeek = null,
-  recentWindow = 4
+  recentWindow = 4,
+  // A single starter scoring nothing is variance. Players get shut out, get
+  // hurt in the first quarter, or draw a terrible matchup, and none of that is
+  // the manager's fault. Several zeros in the same week is a different claim:
+  // that nobody looked at the lineup. Without injury and bye data the honest
+  // signal is the cluster, not the individual zero.
+  zeroCluster = 3
 } = {}) {
   const managers = new Map();
 
@@ -133,7 +139,7 @@ export function managerActivity(teamWeeks = [], {
     const acc = managers.get(week.ownerId) || {
       ownerId: week.ownerId,
       manager: week.manager || week.ownerId,
-      weeks: 0, emptySlotWeeks: 0, emptySlots: 0, zeroStarterWeeks: 0, zeroStarters: 0,
+      weeks: 0, emptySlotWeeks: 0, emptySlots: 0, zeroClusterWeeks: 0, zeroStarters: 0, worstZeroWeek: 0,
       efficiencySum: 0, efficiencyWeeks: 0,
       recentEfficiencySum: 0, recentEfficiencyWeeks: 0, recentEmptySlots: 0
     };
@@ -141,7 +147,11 @@ export function managerActivity(teamWeeks = [], {
     const empty = Number(week.emptySlots) || 0;
     const zero = Number(week.zeroStarters) || 0;
     if (empty > 0) { acc.emptySlotWeeks += 1; acc.emptySlots += empty; }
-    if (zero > 0) { acc.zeroStarterWeeks += 1; acc.zeroStarters += zero; }
+    if (zero > 0) { acc.zeroStarters += zero; }
+    if (zero >= zeroCluster) {
+      acc.zeroClusterWeeks += 1;
+      if (zero > acc.worstZeroWeek) acc.worstZeroWeek = zero;
+    }
     if (week.efficiency != null) { acc.efficiencySum += week.efficiency; acc.efficiencyWeeks += 1; }
 
     const isRecent = currentWeek == null || Number(week.week) > Number(currentWeek) - recentWindow;
@@ -162,8 +172,12 @@ export function managerActivity(teamWeeks = [], {
     if (acc.recentEmptySlots > 0) {
       signals.push({ key: 'empty', severity: 3, text: `${acc.recentEmptySlots} empty lineup slot${acc.recentEmptySlots === 1 ? '' : 's'} in the last ${recentWindow} weeks` });
     }
-    if (acc.zeroStarterWeeks >= 2) {
-      signals.push({ key: 'zeros', severity: 2, text: `Started a player who scored nothing in ${acc.zeroStarterWeeks} weeks` });
+    if (acc.zeroClusterWeeks >= 2) {
+      signals.push({
+        key: 'zeros',
+        severity: 2,
+        text: `${acc.zeroClusterWeeks} weeks with ${zeroCluster}+ starters scoring nothing (worst: ${acc.worstZeroWeek})`
+      });
     }
     if (recentEfficiency != null && recentEfficiency < 0.8) {
       signals.push({ key: 'efficiency', severity: 2, text: `Recent lineup efficiency ${(recentEfficiency * 100).toFixed(0)}%` });

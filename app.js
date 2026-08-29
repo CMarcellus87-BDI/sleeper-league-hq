@@ -18,7 +18,7 @@ import {
   surplusValue,
   rosterCrunchCost,
   realizedSettledShare
-} from './analytics.js?v=10.6.0';
+} from './analytics.js?v=10.6.1';
 import {
   optimalLineup,
   weekEfficiency,
@@ -27,13 +27,13 @@ import {
   luckIndex,
   scheduleSwap,
   coachingRecord
-} from './efficiency.js?v=10.6.0';
+} from './efficiency.js?v=10.6.1';
 import {
   detectScoringFormat,
   describeScoring,
   nflversePoints,
   formatMatchesSource
-} from './scoring.js?v=10.6.0';
+} from './scoring.js?v=10.6.1';
 import {
   avatarUrl as leagueAvatarUrl,
   playoffPicture,
@@ -47,7 +47,7 @@ import {
   summarizeLeagueForUser,
   sortLeagueSummaries,
   aggregateLeagueSummaries
-} from './league.js?v=10.6.0';
+} from './league.js?v=10.6.1';
 import {
   NAV,
   DEFAULT_ROUTE,
@@ -56,13 +56,13 @@ import {
   resolveRoute,
   routeHash,
   itemsForGroup
-} from './routing.js?v=10.6.0';
+} from './routing.js?v=10.6.1';
 import {
   powerRankings,
   managerActivity,
   countEmptySlots,
   countZeroStarters
-} from './pulse.js?v=10.6.0';
+} from './pulse.js?v=10.6.1';
 import {
   aggregateUsage,
   mergeSnapCounts,
@@ -70,13 +70,13 @@ import {
   risingUsage,
   fadingUsage,
   crossReferenceTrending
-} from './usage.js?v=10.6.0';
+} from './usage.js?v=10.6.1';
 import {
   makeRng,
   scoringProfile,
   leagueScoringProfile,
   simulatePlayoffOdds
-} from './simulation.js?v=10.6.0';
+} from './simulation.js?v=10.6.1';
 import {
   waiverLeaderboard,
   waiverExtremes,
@@ -86,7 +86,7 @@ import {
   reportCard,
   reportGrade,
   summarizeStints
-} from './insights.js?v=10.6.0';
+} from './insights.js?v=10.6.1';
 import {
   buildNameIndex,
   matchRankings,
@@ -96,7 +96,7 @@ import {
   arbitrageThresholds,
   matchProjections,
   startSitAdvice
-} from './fantasypros.js?v=10.6.0';
+} from './fantasypros.js?v=10.6.1';
 
 // Optional local overrides. `config.local.js` is gitignored and excluded from
 // release archives, so settings survive upgrades and never reach the repo.
@@ -114,7 +114,7 @@ const CONFIG = {
   maxHistorySeasons: 20,
   maxWeeksPerSeason: 18,
   matchupConcurrency: 4,
-  version: '10.6.0',
+  version: '10.6.1',
   valueApiBase: 'https://api.statsguyfantasy.com/api/v1',
   // Deployed proxy that holds the FantasyPros key. Empty disables ECR features.
   // See worker/fantasypros-proxy.js for the Cloudflare Worker, or api/ for Vercel.
@@ -536,7 +536,10 @@ function pickResolutionKey(season, round, rosterId){return `${season}|${Number(r
 function pickSlotLabel(round, slot){return `${Number(round)}.${String(Number(slot)).padStart(2,'0')}`;}
 async function loadDraftResolutionsForSeason(season){
   const seasonKey=String(season);
-  if(state.draftResolutionSeasons.has(seasonKey))return;
+  // Both must be present. The pick record was added after resolutions, so a
+  // season already loaded by the Trades view has resolutions but no picks, and
+  // returning on resolutions alone left the draft room permanently empty.
+  if(state.draftResolutionSeasons.has(seasonKey)&&state.draftPicksBySeason.has(seasonKey))return;
   if(state.draftResolutionPromises.has(seasonKey))return state.draftResolutionPromises.get(seasonKey);
   const promise=(async()=>{
     const item=state.history.find(h=>String(h.league.season)===seasonKey);
@@ -544,6 +547,9 @@ async function loadDraftResolutionsForSeason(season){
     const drafts=await api(`/league/${item.league.league_id}/drafts`).catch(()=>[]);
     const complete=(Array.isArray(drafts)?drafts:[]).filter(d=>d?.draft_id&&d.status==='complete');
     const candidates=new Map();
+    // Drafts resolve concurrently; each doing read-modify-write on shared state
+    // would lose whichever finished first.
+    const collectedPicks=[];
     await Promise.all(complete.map(async draft=>{
       const [detail,picks]=await Promise.all([
         api(`/draft/${draft.draft_id}`).catch(()=>draft),
@@ -557,10 +563,9 @@ async function loadDraftResolutionsForSeason(season){
       // keeps one entry per original slot.
       const draftType=String(detail?.type||draft?.type||'').toLowerCase();
       const isRookie=Number(rounds)<=6||draftType==='rookie';
-      const seasonPicks=state.draftPicksBySeason.get(seasonKey)||[];
       for(const pick of (Array.isArray(picks)?picks:[])){
         if(!pick?.player_id)continue;
-        seasonPicks.push({
+        collectedPicks.push({
           season:String(detail?.season||draft?.season||item.league.season),
           draftId:draft.draft_id,
           draftLabel:isRookie?'Rookie draft':'Startup draft',
@@ -577,7 +582,6 @@ async function loadDraftResolutionsForSeason(season){
           rosterId:Number(pick.roster_id)||null
         });
       }
-      state.draftPicksBySeason.set(seasonKey,seasonPicks);
 
       for(const pick of (Array.isArray(picks)?picks:[])){
         const slot=Number(pick.draft_slot||0);
@@ -592,6 +596,8 @@ async function loadDraftResolutionsForSeason(season){
       }
     }));
     candidates.forEach((value,key)=>state.draftResolutions.set(key,value));
+    collectedPicks.sort((a,b)=>(a.pickNo||0)-(b.pickNo||0));
+    state.draftPicksBySeason.set(seasonKey,collectedPicks);
     state.draftResolutionSeasons.add(seasonKey);
   })().finally(()=>state.draftResolutionPromises.delete(seasonKey));
   state.draftResolutionPromises.set(seasonKey,promise);
@@ -1606,7 +1612,14 @@ function renderPulse(){
   $('pulse-rankings').innerHTML=rows.map(row=>`<tr><td class="rank big-rank">${row.rank}</td><td>${move(row.movement)}</td><td><strong>${escapeHtml(names[row.ownerId]||row.ownerId)}</strong><span class="tap-hint">all-play ${row.allPlay.wins}-${row.allPlay.losses}</span></td><td class="gold-score">${comp(row.score)}</td><td>${comp(row.components.allPlay)}</td><td>${comp(row.components.recent)}</td><td>${comp(row.components.roster)}</td></tr>`).join('');
 
   const currentWeek=Math.max(...seasonWeeks.map(r=>Number(r.week)||0),0);
-  const activity=managerActivity(seasonWeeks,{currentWeek,lastTransactionWeek:lastTransactionWeeks()});
+  // Scale the cluster threshold to lineup size: three zeros in a nine-slot
+  // lineup is a third of the team, but far less telling in a sixteen-slot one.
+  const slotCount=lineupSlots().length||9;
+  const activity=managerActivity(seasonWeeks,{
+    currentWeek,
+    lastTransactionWeek:lastTransactionWeeks(),
+    zeroCluster:Math.max(3,Math.ceil(slotCount*0.35))
+  });
   const concerns=activity.filter(a=>a.concern);
   const quiet=activity.filter(a=>!a.concern&&a.signals.length);
   const engaged=activity.filter(a=>!a.signals.length);
@@ -1913,13 +1926,37 @@ function renderLabWaivers(){
   $('lab-waiver-extremes').innerHTML=`<div class="arb-grid">${card('BEST PICKUPS EVER',hits,'hit')}${card('MONEY BURNED',busts,'bust')}</div>`;
 }
 function renderLabDrafts(){
-  const rows=draftRows();
-  if(!rows.length){$('lab-drafts').innerHTML='<div class="empty-cell">No resolved draft picks in this range. Open the Trades view once to load draft results.</div>';$('lab-draft-extremes').innerHTML='';return;}
-  const graded=gradeDraftPicks(rows,draftSlotBaselines(rows));
+  const seasons=[...state.draftPicksBySeason.keys()].filter(k=>(state.draftPicksBySeason.get(k)||[]).length).sort((a,b)=>Number(b)-Number(a));
+  const select=$('draft-season');
+  select.innerHTML=seasons.map(x=>`<option value="${escapeHtml(x)}">${escapeHtml(x)}</option>`).join('');
+  if(!state.draftSeason||!seasons.includes(state.draftSeason))state.draftSeason=seasons[0]||null;
+  if(state.draftSeason)select.value=state.draftSeason;
+
+  if(!seasons.length){
+    $('lab-drafts').innerHTML='<div class="empty-cell">No completed drafts found. Sleeper only exposes drafts for seasons this league actually played.</div>';
+    $('lab-draft-extremes').innerHTML='';$('draft-note').textContent='';return;
+  }
+  const all=draftRows(state.draftSeason);
+  if(!all.length){
+    $('lab-drafts').innerHTML='<div class="empty-cell">No picks with scoring history in this season yet.</div>';
+    $('lab-draft-extremes').innerHTML='';$('draft-note').textContent='';return;
+  }
+
+  // Grade within a single draft. A startup first and a rookie first are not the
+  // same asset, and pooling them made every startup pick look like a steal.
+  const byDraft=new Map();
+  for(const row of all){
+    const bucket=byDraft.get(row.draftId)||{label:row.draftLabel,rows:[]};
+    bucket.rows.push(row);byDraft.set(row.draftId,bucket);
+  }
+  const graded=[];
+  for(const bucket of byDraft.values())graded.push(...gradeDraftPicks(bucket.rows,draftSlotBaselines(bucket.rows)));
+  $('draft-note').textContent=`${state.draftSeason}: ${[...byDraft.values()].map(b=>`${b.label} (${b.rows.length} picks)`).join(' · ')}. Each pick graded against its own round in its own draft.`;
   const board=draftLeaderboard(graded);
   $('lab-drafts').innerHTML=`<div class="table-wrap"><table><thead><tr><th>#</th><th>Manager</th><th>Picks</th><th>Points</th><th>vs Round Avg</th><th>Per Pick</th><th>Best</th></tr></thead><tbody>${board.map((r,i)=>`<tr><td class="rank">${i+1}</td><td><strong>${escapeHtml(r.manager)}</strong></td><td>${r.picks}</td><td>${r.points.toFixed(1)}</td><td class="${r.delta>=0?'luck-good':'luck-bad'}">${r.delta>0?'+':''}${r.delta.toFixed(1)}</td><td>${r.deltaPerPick>0?'+':''}${r.deltaPerPick.toFixed(1)}</td><td>${r.best?escapeHtml(r.best.name):'—'}</td></tr>`).join('')}</tbody></table></div>`;
-  const steals=graded.slice(0,5),reaches=[...graded].reverse().slice(0,5);
-  const card=(title,list)=>`<div><p class="eyebrow">${title}</p>${list.map(x=>`<div class="rank-row"><span>R${x.round}</span><div><strong>${escapeHtml(x.name)}</strong><small>${escapeHtml(x.manager)} • ${escapeHtml(x.season)} • round average ${x.baseline.toFixed(0)}</small></div><b class="${x.delta>=0?'luck-good':'luck-bad'}">${x.delta>0?'+':''}${x.delta.toFixed(0)}</b></div>`).join('')}</div>`;
+  const sorted=[...graded].sort((a,b)=>b.delta-a.delta);
+  const steals=sorted.slice(0,5),reaches=[...sorted].reverse().slice(0,5);
+  const card=(title,list)=>`<div><p class="eyebrow">${title}</p>${list.map(x=>`<div class="rank-row"><span>R${x.round}</span><div><strong>${escapeHtml(x.name)}</strong><small>${escapeHtml(x.manager)} • ${escapeHtml(x.draftLabel)}${x.pickNo?` pick ${x.pickNo}`:''} • round average ${x.baseline.toFixed(0)}</small></div><b class="${x.delta>=0?'luck-good':'luck-bad'}">${x.delta>0?'+':''}${x.delta.toFixed(0)}</b></div>`).join('')}</div>`;
   $('lab-draft-extremes').innerHTML=`<div class="arb-grid">${card('BIGGEST STEALS',steals)}${card('BIGGEST REACHES',reaches)}</div>`;
 }
 function renderLabReportCard(){
@@ -1927,7 +1964,8 @@ function renderLabReportCard(){
   if(!scope)return;
   const eff=efficiencyLeaderboard(scope),luck=luckTable(scope),coaching=coachingRecord(scope.games);
   const waivers=waiverLeaderboard(waiverRows());
-  const drafts=draftLeaderboard(gradeDraftPicks(draftRows(),draftSlotBaselines(draftRows())));
+  const draftPicks=[...state.draftPicksBySeason.keys()].flatMap(season=>draftRows(season));
+  const drafts=draftLeaderboard(gradeDraftPicks(draftPicks,draftSlotBaselines(draftPicks)));
   const ownerIds=[...new Set(scope.teamWeeks.map(r=>r.ownerId))];
   if(!ownerIds.length){$('lab-report').innerHTML='<div class="empty-cell">Not enough history yet.</div>';return;}
   const map=(rows,key)=>new Map(rows.map(r=>[r.ownerId,r[key]]));
@@ -2594,7 +2632,7 @@ async function refreshAll(){
   state.currentTradedPicks=null;state.tradeRelationshipsLoaded=false;state.tradeRelationshipsPromise=null;
   state.tradeLabRendered=false;state.pickValueWarned=false;
   state.lineageReady=false;state.lineagePromise=null;state.lineageByTrade.clear();
-  state.efficiency=null;state.efficiencyPromise=null;state.odds=null;state.oddsPromise=null;state.oddsError=null;state.usage=null;state.usagePromise=null;state.usageError=null;state.trending=null;state.waiversBySeason.clear();state.waiversLoaded=false;state.ecr=null;state.ecrPromise=null;state.ecrError=null;state.projections=null;state.projectionsPromise=null;state.projectionsError=null;
+  state.efficiency=null;state.efficiencyPromise=null;state.odds=null;state.oddsPromise=null;state.oddsError=null;state.usage=null;state.usagePromise=null;state.usageError=null;state.trending=null;state.waiversBySeason.clear();state.waiversLoaded=false;state.draftPicksBySeason.clear();state.draftSeason=null;state.ecr=null;state.ecrPromise=null;state.ecrError=null;state.projections=null;state.projectionsPromise=null;state.projectionsError=null;
   clearRosterMemo();
   await load();
   await navigate(state.route);
@@ -2646,7 +2684,7 @@ function resetLeagueState(){
   state.tradesBySeason.clear();state.tradePromisesBySeason.clear();
   state.tradeGradesBySeason.clear();state.tradeGradePromises.clear();
   state.draftResolutions.clear();state.draftResolutionSeasons.clear();
-  state.waiversBySeason.clear();state.waiversLoaded=false;
+  state.waiversBySeason.clear();state.waiversLoaded=false;state.draftPicksBySeason.clear();state.draftSeason=null;
   state.currentTradedPicks=null;state.tradeRelationshipsLoaded=false;state.tradeRelationshipsPromise=null;
   state.tradeLabRendered=false;state.lineageReady=false;state.lineagePromise=null;state.lineageByTrade.clear();
   state.efficiency=null;state.efficiencyPromise=null;
@@ -2915,6 +2953,7 @@ window.addEventListener('hashchange',()=>{
 $$('[data-jump]').forEach(b=>b.addEventListener('click',()=>goTo(resolveRoute(parseRoute(b.dataset.jump)))));$('season-select').addEventListener('change',e=>renderStandingsSeason(Number(e.target.value)));$('explorer-season').addEventListener('change',e=>renderSeasonExplorer(Number(e.target.value)));$('franchise-select').addEventListener('change',e=>renderFranchiseProfile(e.target.value));$('trade-season').addEventListener('change',loadSelectedTradeSeason);$('trade-chain-toggle').addEventListener('click',()=>{setChainMode(!state.chainMode).catch(e=>showError(`Chain grades failed: ${e.message}`));});$('trade-lab-a').addEventListener('change',()=>{state.tradeLabSelections.a.clear();refreshTradeLabSides();});$('trade-lab-b').addEventListener('change',()=>{state.tradeLabSelections.b.clear();refreshTradeLabSides();});$('assistant-manager').addEventListener('change',renderRosterAssistant);$('lab-season').addEventListener('change',e=>{state.labSeason=e.target.value;renderLab();if(state.labTab!=='efficiency')showLabTab(state.labTab);});
 $('player-search').addEventListener('input',e=>{state.playerQuery=e.target.value;renderPlayerSearch();});
 $('pulse-season').addEventListener('change',e=>{state.pulseSeason=e.target.value;renderPulse();});
+$('draft-season').addEventListener('change',e=>{state.draftSeason=e.target.value;renderLabDrafts();});
 $('league-select').addEventListener('change',e=>{
   if(e.target.value)switchLeague(e.target.value).catch(err=>showError(`Could not switch league: ${err.message}`));
 });

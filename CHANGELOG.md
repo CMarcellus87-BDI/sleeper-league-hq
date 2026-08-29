@@ -1,5 +1,32 @@
 # Changelog
 
+## v10.6.1 — draft room repair and fairer engagement signals
+
+### Fixed
+- **The draft room returned nothing.** Three separate faults: a patch in v10.6.0
+  never reached `renderLabDrafts`, so it still called `draftRows()` with no
+  season and got an empty list back; the loader returned early when a season had
+  resolutions but no pick record, which is exactly the state left by opening the
+  Trades view first; and concurrent drafts were doing read-modify-write on the
+  same array, so whichever finished first was overwritten.
+- The draft panel now explains an empty result rather than showing a bare
+  message: no completed drafts, versus drafts found but no scoring history yet.
+
+### Changed
+- **A starter scoring zero no longer counts as neglect on its own.** Players get
+  shut out, get hurt in the first quarter, and draw terrible matchups, and none
+  of that is the manager's fault. The app has no injury or bye data for past
+  weeks, so the honest signal is the cluster rather than the individual zero:
+  only weeks where several starters scored nothing at once are counted, and two
+  such weeks are needed before it contributes.
+- The threshold scales with lineup size, since three zeros in a nine-slot lineup
+  is a third of the team and much less telling in a sixteen-slot one.
+- The engagement panel says plainly what it cannot know.
+
+### Added
+- Four tests covering the goose-egg case: three separate weeks with one zero
+  each must not flag, while two weeks with several zeros must. Suite is now 241.
+
 ## v10.6.0 — accuracy pass
 
 Six reported problems, five of them real bugs rather than tuning.

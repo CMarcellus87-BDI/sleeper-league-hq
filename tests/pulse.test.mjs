@@ -133,3 +133,47 @@ test('no transaction history means no quiet signal rather than a false one', () 
   const rows = managerActivity(engaged, { currentWeek: 6, lastTransactionWeek: new Map() });
   assert.ok(!rows.some(r => r.signals.some(s => s.key === 'quiet')));
 });
+
+// --- zero-scoring starters -------------------------------------------------
+
+const oneBadWeek = [
+  { ownerId: 'unlucky', manager: 'Unlucky', week: 5, efficiency: 0.96, emptySlots: 0, zeroStarters: 1 },
+  { ownerId: 'unlucky', manager: 'Unlucky', week: 6, efficiency: 0.94, emptySlots: 0, zeroStarters: 1 },
+  { ownerId: 'unlucky', manager: 'Unlucky', week: 7, efficiency: 0.97, emptySlots: 0, zeroStarters: 1 }
+];
+
+test('a single starter scoring nothing is variance, not neglect', () => {
+  // Players get shut out. Without injury or bye data the app cannot tell a
+  // goose egg from a lineup nobody set, so one zero must never flag.
+  const rows = managerActivity(oneBadWeek, { currentWeek: 7 });
+  const row = rows.find(r => r.ownerId === 'unlucky');
+  assert.equal(row.concern, false);
+  assert.ok(!row.signals.some(s => s.key === 'zeros'), 'three weeks with one zero each is not a pattern');
+});
+
+test('several zeros in the same week is a different claim', () => {
+  const abandoned = [
+    { ownerId: 'gone', manager: 'Gone', week: 5, efficiency: 0.5, emptySlots: 0, zeroStarters: 4 },
+    { ownerId: 'gone', manager: 'Gone', week: 6, efficiency: 0.45, emptySlots: 0, zeroStarters: 3 }
+  ];
+  const row = managerActivity(abandoned, { currentWeek: 6 }).find(r => r.ownerId === 'gone');
+  const zeros = row.signals.find(s => s.key === 'zeros');
+  assert.ok(zeros, 'four starters at zero twice is nobody looking at the lineup');
+  assert.match(zeros.text, /worst: 4/);
+  assert.equal(row.concern, true);
+});
+
+test('one cluster week alone is not enough on its own', () => {
+  const once = [{ ownerId: 'busy', manager: 'Busy', week: 6, efficiency: 0.93, emptySlots: 0, zeroStarters: 3 }];
+  const row = managerActivity(once, { currentWeek: 6 }).find(r => r.ownerId === 'busy');
+  assert.ok(!row.signals.some(s => s.key === 'zeros'), 'one bad week is a bye stack, not neglect');
+});
+
+test('the cluster threshold scales with the caller', () => {
+  const weeks = [
+    { ownerId: 'x', manager: 'X', week: 5, efficiency: 0.9, emptySlots: 0, zeroStarters: 2 },
+    { ownerId: 'x', manager: 'X', week: 6, efficiency: 0.9, emptySlots: 0, zeroStarters: 2 }
+  ];
+  assert.ok(!managerActivity(weeks, { currentWeek: 6 })[0].signals.some(s => s.key === 'zeros'));
+  assert.ok(managerActivity(weeks, { currentWeek: 6, zeroCluster: 2 })[0].signals.some(s => s.key === 'zeros'));
+});
